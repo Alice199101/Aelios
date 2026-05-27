@@ -46,6 +46,7 @@ interface DailyDigestResult {
 
 interface DailyDigestStats {
   date: string;
+  mode: "dream";
   processedMessages: number;
   addedMemories: number;
   updatedMemories: number;
@@ -62,6 +63,15 @@ const DEFAULT_EXCERPT_LIMIT = 8;
 const DEFAULT_EMPTY_MEMORY_MIN_CHARS = 4;
 const DEFAULT_TIME_ZONE = "Asia/Singapore";
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+function readDreamConfig(env: Env, dreamName: keyof Env, digestName: keyof Env): unknown {
+  return env[dreamName] ?? env[digestName];
+}
+
+function isDreamEnabled(env: Env): boolean {
+  if (env.ENABLE_DREAM !== undefined) return env.ENABLE_DREAM !== "false";
+  return env.ENABLE_DAILY_MEMORY_DIGEST !== "false";
+}
 
 function readPositiveInt(value: unknown, fallback: number, max: number): number {
   const parsed = typeof value === "string" ? Number(value) : typeof value === "number" ? value : fallback;
@@ -334,22 +344,33 @@ function buildDigestPrompt(input: {
   hasMore: boolean;
 }): string {
   return [
-    "你是每日记忆小秘书。请把一天内的原始聊天整理成少量高质量长期记忆。",
+    "你是 Aelios 的 nightly dream 记忆整理器。你的任务不是简单总结，而是在用户休息时整理长期记忆。",
+    "你会读取旧长期记忆和当天聊天 transcript，产出一份更干净、更一致、更有用的 memory store 更新计划。",
     "只输出 JSON，不要 markdown，不要解释，不要输出思考过程。",
     "",
-    "总原则：",
+    "Dream 目标：",
+    "- 合并重复记忆，避免同一事实以多个版本长期存在。",
+    "- 发现过时、被新信息否定、互相矛盾的旧记忆，并更新或删除。",
+    "- 从聊天中提炼未来会影响回答的稳定偏好、项目状态、关系事实、承诺、边界和重要原文。",
+    "- 形成下一次对话可直接使用的简洁记忆，而不是保存流水账。",
+    "",
+    "窗口：",
     `- 你只能处理 ${input.dateLabel} 这一天窗口内的聊天。窗口是 ${input.startIso} 到 ${input.endIso}。`,
     input.hasMore ? "- 这是当天的一批聊天，不是完整一天；只整理这一批里明确出现的信息。" : "- 这是当天最后一批或完整批次。",
+    "",
+    "总原则：",
     "- 原始聊天不要逐条变成记忆，只保留未来真的会用到的事实、偏好、边界、项目进展、承诺。",
     "- 宁可少记，也不要把临时语气、寒暄、重复话、空内容、调试内容写进长期记忆。",
     "- 当旧记忆和新信息冲突时，优先更新或删除旧记忆，不要并排留下互相打架的版本。",
+    "- 当新信息只是旧记忆的更准确版本，优先 memories_to_update，不要 memories_to_add。",
+    "- 当多条旧记忆重复，保留更完整的一条并删除重复项；必要时先 update 保留项。",
     "- pinned=true 的旧记忆不能删除，只能在 memories_to_update 中提出更保守的补充。",
     "- 站在“我=助手”的视角写。关于用户，用“你……”；关于助手承诺，用“我需要……”。",
     "- 不要提到 D1、Vectorize、RAG、数据库、记忆系统、代理层等实现细节。",
     "",
-    "今天摘要格式：",
+    "Dream 输出格式：",
     "- title 是 12 字以内标题。",
-    "- summary 写成一段自然中文。",
+    "- summary 写成一段自然中文，描述这次 dream 整理出了什么。",
     "- sections 最多 5 段，每段有 heading 和 content。",
     `- important_excerpts 最多 ${input.excerptLimit} 条，quote 必须是值得保留的原文片段。`,
     "- memories_to_add 最多 12 条，每条要短、稳定、可复用。",
@@ -359,9 +380,9 @@ function buildDigestPrompt(input: {
     "输出 JSON 结构：",
     JSON.stringify({
       date: input.dateLabel,
-      title: "项目整理",
-      summary: "今天主要讨论了……",
-      sections: [{ heading: "项目", content: "……" }],
+      title: "夜间整理",
+      summary: "这次 dream 合并了重复记忆，更新了项目状态，并保留了关键原文。",
+      sections: [{ heading: "整理结果", content: "……" }],
       important_excerpts: [
         {
           quote: "用户或助手说过的关键原文",
@@ -403,9 +424,9 @@ function buildDigestPrompt(input: {
 
 function formatDailySummary(result: DailyDigestResult, dateLabel: string, messages: MessageRecord[]): string {
   const parts = [
-    `# ${result.date || dateLabel} ${result.title || "每日摘要"}`,
+    `# ${result.date || dateLabel} ${result.title || "Dream 摘要"}`,
     "",
-    result.summary || `${dateLabel} 共整理 ${messages.length} 条聊天。`
+    result.summary || `${dateLabel} dream 共整理 ${messages.length} 条聊天。`
   ];
 
   for (const section of result.sections ?? []) {
@@ -420,7 +441,7 @@ async function callDigestModel(
   env: Env,
   prompt: string
 ): Promise<DailyDigestResult | null> {
-  const model = env.SUMMARY_MODEL || env.MEMORY_MODEL;
+  const model = readString(readDreamConfig(env, "DREAM_MODEL", "SUMMARY_MODEL")) || env.MEMORY_MODEL;
   if (!model) return null;
 
   const request: OpenAIChatRequest = {
@@ -430,7 +451,7 @@ async function callDigestModel(
       { role: "user", content: prompt }
     ],
     temperature: 0,
-    max_tokens: readPositiveInt(env.DAILY_DIGEST_MAX_TOKENS, 3000, 8000),
+    max_tokens: readPositiveInt(readDreamConfig(env, "DREAM_MAX_TOKENS", "DAILY_DIGEST_MAX_TOKENS"), 3000, 8000),
     response_format: {
       type: "json_object"
     },
@@ -447,7 +468,7 @@ async function callDigestModel(
     if (!json) return null;
     return normalizeDigestResult(json);
   } catch (error) {
-    console.error("daily digest model failed", error);
+    console.error("dream model failed", error);
     return null;
   }
 }
@@ -461,7 +482,7 @@ async function cleanEmptyMemories(
   try {
     page = await listVectorMemories(env, { namespace, count: 1000 });
   } catch (error) {
-    console.error("daily digest: failed to list memories for cleanup", error);
+    console.error("dream: failed to list memories for cleanup", error);
     return 0;
   }
   const records = page.data.filter((record) => !record.pinned && record.content.trim().length < minChars);
@@ -483,8 +504,8 @@ async function saveDailySummaryMemory(
     content: input.content,
     importance: 0.66,
     confidence: 0.9,
-    tags: ["daily-summary", input.dateLabel],
-    source: "daily_digest",
+    tags: ["dream-summary", "daily-summary", input.dateLabel],
+    source: "dream",
     sourceMessageIds: input.messageIds
   });
 }
@@ -515,7 +536,7 @@ async function saveImportantExcerpts(
       importance: 0.72,
       confidence: 0.9,
       tags: uniqueStrings(["important-excerpt", input.dateLabel, ...(excerpt.tags ?? [])]),
-      source: "daily_digest",
+      source: "dream",
       sourceMessageIds: excerpt.source_message_ids?.length ? excerpt.source_message_ids : input.fallbackMessageIds
     });
     saved += 1;
@@ -561,17 +582,18 @@ export async function runDailyMemoryDigest(
   namespace: string,
   options: { dateLabel?: string; force?: boolean } = {}
 ): Promise<{ ran: boolean; stats?: DailyDigestStats }> {
-  if (env.ENABLE_DAILY_MEMORY_DIGEST === "false") return { ran: false };
+  if (!isDreamEnabled(env)) return { ran: false };
 
-  const timeZone = readString(env.DAILY_DIGEST_TIME_ZONE) || DEFAULT_TIME_ZONE;
+  const timeZone = readString(readDreamConfig(env, "DREAM_TIME_ZONE", "DAILY_DIGEST_TIME_ZONE")) || DEFAULT_TIME_ZONE;
   const dateLabel = readString(options.dateLabel) || getTargetDigestDateLabel(timeZone);
   const { startIso, endIso } = getDateRangeForLabel(dateLabel, timeZone);
-  const cursorName = `daily_digest:${namespace}:${dateLabel}`;
-  const cursor = await readCursor(env.DB, cursorName);
+  const cursorName = `dream:${namespace}:${dateLabel}`;
+  const legacyCursorName = `daily_digest:${namespace}:${dateLabel}`;
+  const cursor = (await readCursor(env.DB, cursorName)) ?? (await readCursor(env.DB, legacyCursorName));
   const cursorState = options.force ? { done: false, after: null } : readDailyCursor(cursor, startIso, endIso);
   if (cursorState.done) return { ran: false };
 
-  const maxMessages = readPositiveInt(env.DAILY_DIGEST_MAX_MESSAGES, DEFAULT_MAX_MESSAGES, 1000);
+  const maxMessages = readPositiveInt(readDreamConfig(env, "DREAM_MAX_MESSAGES", "DAILY_DIGEST_MAX_MESSAGES"), DEFAULT_MAX_MESSAGES, 1000);
   const messages = await listMessagesByNamespaceInRange(env.DB, {
     namespace,
     startCreatedAt: startIso,
@@ -587,7 +609,7 @@ export async function runDailyMemoryDigest(
   const lastMessage = messages[messages.length - 1];
   const hasMore = messages.length >= maxMessages;
   const memoryContextLimit = readPositiveInt(
-    env.DAILY_DIGEST_MEMORY_CONTEXT_LIMIT,
+    readDreamConfig(env, "DREAM_MEMORY_CONTEXT_LIMIT", "DAILY_DIGEST_MEMORY_CONTEXT_LIMIT"),
     DEFAULT_MEMORY_CONTEXT_LIMIT,
     1000
   );
@@ -598,7 +620,7 @@ export async function runDailyMemoryDigest(
       count: memoryContextLimit
     })).data;
   } catch (error) {
-    console.error("daily digest: failed to list existing vector memories", error);
+    console.error("dream: failed to list existing vector memories", error);
   }
   const cleanedEmptyMemories = await cleanEmptyMemories(env, namespace);
 
@@ -608,12 +630,12 @@ export async function runDailyMemoryDigest(
     endIso,
     messages,
     existingMemories,
-    excerptLimit: readPositiveInt(env.DAILY_DIGEST_EXCERPT_LIMIT, DEFAULT_EXCERPT_LIMIT, 20),
+    excerptLimit: readPositiveInt(readDreamConfig(env, "DREAM_EXCERPT_LIMIT", "DAILY_DIGEST_EXCERPT_LIMIT"), DEFAULT_EXCERPT_LIMIT, 20),
     hasMore
   });
   const digest = await callDigestModel(env, prompt);
   if (!digest) {
-    console.error("daily digest: model did not return valid JSON; cursor not advanced");
+    console.error("dream: model did not return valid JSON; cursor not advanced");
     return { ran: false };
   }
   const summaryContent = formatDailySummary(digest, dateLabel, messages);
@@ -650,7 +672,7 @@ export async function runDailyMemoryDigest(
       importance: memory.importance,
       confidence: memory.confidence,
       tags: memory.tags,
-      source: "daily_digest",
+      source: "dream",
       sourceMessageIds: memory.source_message_ids.length ? memory.source_message_ids : messageIds
     });
     if (saved) addedMemories += 1;
@@ -669,6 +691,7 @@ export async function runDailyMemoryDigest(
     ran: true,
     stats: {
       date: dateLabel,
+      mode: "dream",
       processedMessages: messages.length,
       addedMemories,
       updatedMemories: updates.updated,

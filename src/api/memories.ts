@@ -197,7 +197,7 @@ async function handleRunDigest(
   const date = readString(body.date);
   const dates = readStringArray(body.dates);
   const targets = dates.length > 0 ? dates : date ? [date] : [undefined];
-  const maxRuns = readPositiveInt(body.max_runs, Number(env.DAILY_DIGEST_MAX_RUNS || 3), 10);
+  const maxRuns = readPositiveInt(body.max_runs, Number(env.DREAM_MAX_RUNS || env.DAILY_DIGEST_MAX_RUNS || 3), 10);
   const force = readBoolean(body.force, false);
   const results: Array<{ date?: string; runs: Array<Awaited<ReturnType<typeof runDailyMemoryDigest>>> }> = [];
 
@@ -319,7 +319,7 @@ export async function handleMemories(request: Request, env: Env, ctx: ExecutionC
     return handleSearchMemories(request, env, auth.profile);
   }
 
-  if (tail.length === 1 && tail[0] === "digest" && request.method === "POST") {
+  if (tail.length === 1 && (tail[0] === "digest" || tail[0] === "dream") && request.method === "POST") {
     return handleRunDigest(request, env, auth.profile);
   }
 

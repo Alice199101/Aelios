@@ -330,7 +330,8 @@ Model:      companion
 | `MEMORY_FILTER_MAX_OUTPUT` | `4` | reranker 选出并交给压缩模型的记忆上限 |
 | `MEMORY_FILTER_OUTPUT_CHARS` | `300` | 压缩模型每条返回内容最多多少字 |
 | `MEMORY_FILTER_MAX_TOKENS` | `1400` | 压缩模型 JSON 输出上限，避免多条压缩结果被截断 |
-| `SUMMARY_MODEL` | `deepseek/deepseek-v4-pro` | 每日整理小秘书，负责把 D1 临时聊天整理入长期记忆 |
+| `DREAM_MODEL` | 同 `SUMMARY_MODEL` | 夜间 dream 模型，负责整理 transcript 和旧记忆，合并重复、修正过时记忆 |
+| `SUMMARY_MODEL` | `deepseek/deepseek-v4-pro` | 兼容旧变量；未设置 `DREAM_MODEL` 时作为 dream 模型 |
 | `VISION_MODEL` | `google-ai-studio/gemini-3-flash-preview` | 看图；普通聊天和导盲犬 API 都用它 |
 | `EMBEDDING_MODEL` | `workers-ai/@cf/google/embeddinggemma-300m` | 向量嵌入，默认走 Workers AI |
 | `EMBEDDING_DIMENSIONS` | `768` | 非 Workers AI embedding 请求的目标维度 |
@@ -364,13 +365,14 @@ Model:      companion
 | `VECTORIZE_INDEX_NAME` | `memo-kb` | Vectorize 索引名，给 list-vectors API 使用 |
 | `ENABLE_AUTO_MEMORY` | 空（开启） | 设 `false` 关闭自动记忆 |
 | `ENABLE_INCREMENTAL_MEMORY` | `false` | 设 `true` 才恢复每轮聊天后即时抽取 |
-| `ENABLE_DAILY_MEMORY_DIGEST` | `true` | 每日小秘书整理原始聊天 |
-| `DAILY_DIGEST_TIME_ZONE` | `Asia/Singapore` | 每日整理按这个时区切自然日；默认每天凌晨处理昨天 |
-| `DAILY_DIGEST_MAX_MESSAGES` | `320` | 每次每日整理最多处理的原始消息数；当天太长会分批继续 |
-| `DAILY_DIGEST_MAX_RUNS` | `3` | 每次定时任务最多连续整理几批，防止单次模型输入太大 |
-| `DAILY_DIGEST_MAX_TOKENS` | `5000` | 每日整理小秘书最多输出 token |
-| `DAILY_DIGEST_MEMORY_CONTEXT_LIMIT` | `250` | 每日整理时提供给模型参考的旧记忆数量 |
-| `DAILY_DIGEST_EXCERPT_LIMIT` | `8` | 每日最多保存的重要原文段落 |
+| `ENABLE_DREAM` | `true` | 夜间 dream 开关；未设置时兼容 `ENABLE_DAILY_MEMORY_DIGEST` |
+| `ENABLE_DAILY_MEMORY_DIGEST` | `true` | 旧变量名，仍兼容 |
+| `DREAM_TIME_ZONE` | 同 `DAILY_DIGEST_TIME_ZONE` | dream 按这个时区切自然日；默认每天凌晨处理昨天 |
+| `DREAM_MAX_MESSAGES` | `320` | 每次 dream 最多处理的原始消息数；当天太长会分批继续 |
+| `DREAM_MAX_RUNS` | `3` | 每次定时任务最多连续 dream 几批，防止单次模型输入太大 |
+| `DREAM_MAX_TOKENS` | `5000` | dream 模型最多输出 token |
+| `DREAM_MEMORY_CONTEXT_LIMIT` | `250` | dream 时提供给模型参考的旧记忆数量 |
+| `DREAM_EXCERPT_LIMIT` | `8` | dream 每天最多保存的重要原文段落 |
 | `ENABLE_DAILY_SUMMARY_MEMORY` | `false` | 设 `true` 才把每日摘要也写入 Vectorize；默认只留在 D1 |
 | `EMPTY_MEMORY_MIN_CHARS` | `4` | 每日整理时清理短空记忆的阈值 |
 | `PUBLIC_MODEL_NAME` | `companion` | 客户端看到的模型名 |
@@ -522,9 +524,15 @@ https://<worker>/memory-admin
 
 面板在浏览器里保存 Worker URL 和 API key，只作为本地管理工具使用。它调用同一套 REST API，可以搜索、列表、创建、编辑、删除 Vectorize 长期记忆，也可以运行 `vector_health` 和按页 `vector_reindex`。
 
-手动补跑每日小秘书：
+手动补跑 dream：
 
 ```bash
+curl "https://<worker>/v1/memory/dream" \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"dates":["2026-05-16","2026-05-17"],"max_runs":3}'
+
+# 旧 digest 路径仍兼容
 curl "https://<worker>/v1/memory/digest" \
   -H "Authorization: Bearer <key>" \
   -H "Content-Type: application/json" \
@@ -664,15 +672,15 @@ dash_to_comma:      —、——、– 改成 ，
 ```
 保存 user/assistant messages 到 D1
   -> 默认不即时写入长期记忆
-  -> 每天 04:10（Asia/Singapore）触发 scheduled 小秘书
+  -> 每天 04:10（Asia/Singapore）触发 scheduled dream
     -> 只读取昨天这个自然日的原始聊天
-    -> 如果当天聊天太多，就按 DAILY_DIGEST_MAX_MESSAGES 分批处理，最多连续跑 DAILY_DIGEST_MAX_RUNS 批
+    -> 如果当天聊天太多，就按 DREAM_MAX_MESSAGES 分批处理，最多连续跑 DREAM_MAX_RUNS 批
     -> 读取一批 Vectorize 旧 active 记忆作为参考
     -> 清理空/过短记忆
-    -> SUMMARY_MODEL 生成固定格式日摘要
+    -> DREAM_MODEL 生成固定格式 dream 摘要
     -> 日摘要默认只保存到 D1；important excerpt 可进入 Vectorize
     -> 新增少量高质量长期记忆
-    -> 更新/删除冲突、重复、过期旧记忆
+    -> 合并重复、替换过时、更新/删除冲突旧记忆
     -> 原始 messages 只保留 3 天
 ```
 
