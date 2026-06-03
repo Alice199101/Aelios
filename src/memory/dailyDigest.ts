@@ -89,8 +89,8 @@ interface DigestModelCallResult {
   finishReason?: string | null;
 }
 
-const DEFAULT_MAX_MESSAGES = 120;
-const DEFAULT_MEMORY_CONTEXT_LIMIT = 80;
+const DEFAULT_MAX_MESSAGES = 40;
+const DEFAULT_MEMORY_CONTEXT_LIMIT = 40;
 const DEFAULT_EXCERPT_LIMIT = 8;
 const DEFAULT_EMPTY_MEMORY_MIN_CHARS = 4;
 const DEFAULT_TIME_ZONE = "Asia/Singapore";
@@ -381,7 +381,7 @@ function formatTranscript(messages: MessageRecord[]): string {
   return messages
     .map((message) => {
       const role = message.role === "assistant" ? "我(助手)" : "用户";
-      return `[${message.id}][${message.created_at}][${role}] ${truncate(message.content.trim(), 1200)}`;
+      return `[${message.id}][${message.created_at}][${role}] ${truncate(message.content.trim(), 700)}`;
     })
     .join("\n\n");
 }
