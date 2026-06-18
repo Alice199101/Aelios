@@ -1,8 +1,9 @@
 import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
-import { createMemory, getMemoryById, listMemoriesPage, softDeleteMemory } from "../db/memories";
-import { createEmbedding, deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
+import { createMemory, getMemoryById, listMemoriesPage, updateMemory } from "../db/memories";
+import { createEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
+import { deleteSyncedMemory, syncMemoryVector } from "../memory/state";
 import {
   extractRefIdFromVector,
   extractStatusFromVector
@@ -259,8 +260,7 @@ export async function handleVectorHealth(request: Request, env: Env): Promise<Re
   } finally {
     if (created?.id) {
       try {
-        const record = await softDeleteMemory(env.DB, { namespace, id: created.id });
-        if (record) await deleteMemoryEmbedding(env, record);
+        await deleteSyncedMemory(env, namespace, created.id);
       } catch (error) {
         console.error("vector_health cleanup failed", error);
       }
@@ -282,35 +282,56 @@ export async function handleVectorReindex(request: Request, env: Env): Promise<R
   const limit = readPositiveInt(body.limit, 50, 100);
   const cursor = readString(body.cursor);
   const dryRun = readBoolean(body.dry_run, true);
+  const syncFilter = readString(body.sync_filter);
   const model = readEmbeddingModel(env);
 
   try {
-    const page = await listMemoriesPage(env.DB, {
-      namespace,
-      status: "active",
-      limit,
-      offset: cursor ? Number(cursor) || 0 : 0
-    });
-    const rewritten: Array<{ id: string; vector_id: string | null; ok: boolean; error?: string }> = [];
+    let filterStatus = "active";
+    let sql = "SELECT * FROM memories WHERE namespace = ? AND status = ?";
+    const binds: unknown[] = [namespace, filterStatus];
 
-    for (const memory of page.records) {
+    if (syncFilter) {
+      sql += " AND (vector_sync_status = ? OR vector_sync_status IS NULL)";
+      binds.push(syncFilter);
+    }
+
+    const offset = cursor ? Number(cursor) || 0 : 0;
+    sql += " ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT ? OFFSET ?";
+    binds.push(limit + 1, offset);
+
+    const result = await env.DB.prepare(sql).bind(...binds).all<import("../types").MemoryRecord>();
+    const rows = result.results ?? [];
+    const records = rows.slice(0, limit);
+    const hasMore = rows.length > limit;
+    const nextOffset = hasMore ? offset + records.length : null;
+
+    const rewritten: Array<{ id: string; vector_id: string | null; ok: boolean; sync_status?: string; error?: string }> = [];
+
+    for (const memory of records) {
       if (dryRun) {
         rewritten.push({ id: memory.id, vector_id: memory.vector_id, ok: true });
         continue;
       }
 
       try {
-        const ok = await upsertMemoryEmbedding(env, memory);
+        const syncStatus = await syncMemoryVector(env, memory);
         rewritten.push({
           id: memory.id,
           vector_id: memory.vector_id,
-          ok
+          ok: syncStatus === "synced",
+          sync_status: syncStatus,
         });
       } catch (error) {
+        await updateMemory(env.DB, {
+          namespace,
+          id: memory.id,
+          patch: { vectorSyncStatus: "failed" },
+        });
         rewritten.push({
           id: memory.id,
           vector_id: memory.vector_id,
           ok: false,
+          sync_status: "failed",
           error: error instanceof Error ? error.message : String(error)
         });
       }
@@ -324,12 +345,12 @@ export async function handleVectorReindex(request: Request, env: Env): Promise<R
         embedding_model: model,
         dry_run: dryRun,
         requested_limit: limit,
-        listed_ids: page.records.length,
-        matched_memories: page.records.length,
+        listed_ids: records.length,
+        matched_memories: records.length,
         rewritten_count: rewritten.length - failed.length,
         failed_count: failed.length,
-        cursor: page.nextOffset === null ? null : String(page.nextOffset),
-        has_more: page.hasMore,
+        cursor: nextOffset === null ? null : String(nextOffset),
+        has_more: hasMore,
         rewritten,
         failed
       }

@@ -1,10 +1,9 @@
 import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
 import { getOrCreateConversation } from "../db/conversations";
-import { createMemory, getMemoryById, listMemoriesPage, softDeleteMemory, updateMemory } from "../db/memories";
+import { getMemoryById, listMemoriesPage } from "../db/memories";
 import { saveIngestMessages } from "../db/messages";
 import { runDailyMemoryDigest } from "../memory/dailyDigest";
-import { upsertMemoryEmbedding, deleteMemoryEmbedding } from "../memory/embedding";
 import { filterAndCompressMemoriesWithMeta } from "../memory/filter";
 import { formatMemoryPatch } from "../memory/inject";
 import {
@@ -16,6 +15,11 @@ import {
   normalizeUrgencyLevel
 } from "../memory/coordinates";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
+import {
+  createSyncedMemory,
+  patchSyncedMemory,
+  deleteSyncedMemory,
+} from "../memory/state";
 import { enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
 import type { Env, KeyProfile } from "../types";
 import { json, openAiError } from "../utils/json";
@@ -52,7 +56,7 @@ async function handleCreateMemory(
 
   let memory;
   try {
-    const created = await createMemory(env.DB, {
+    const created = await createSyncedMemory(env, {
       namespace: resolveNamespace(profile, body.namespace),
       type,
       content,
@@ -71,7 +75,6 @@ async function handleCreateMemory(
       tensionScore: normalizeTensionScore(body.tension_score),
       responsePosture: normalizeResponsePosture(body.response_posture)
     });
-    await upsertMemoryEmbedding(env, created);
     memory = toMemoryApiRecord(created);
   } catch (error) {
     const message = error instanceof Error ? error.message : "memory_create failed";
@@ -283,14 +286,7 @@ async function handlePatchMemory(
     responsePosture: body.response_posture === undefined ? undefined : normalizeResponsePosture(body.response_posture)
   };
 
-  const updated = await updateMemory(env.DB, { namespace, id, patch });
-  if (updated) {
-    if (updated.status === "active") {
-      await upsertMemoryEmbedding(env, updated);
-    } else {
-      await deleteMemoryEmbedding(env, updated);
-    }
-  }
+  const updated = await patchSyncedMemory(env, namespace, id, patch);
 
   if (!updated) return openAiError("Memory not found", 404);
   return json({ data: toMemoryApiRecord(updated) });
@@ -307,8 +303,7 @@ async function handleDeleteMemory(
   const existing = await getMemoryById(env.DB, { namespace: profile.namespace, id });
   if (!existing || existing.namespace !== profile.namespace) return openAiError("Memory not found", 404);
 
-  const deleted = await softDeleteMemory(env.DB, { namespace: profile.namespace, id });
-  if (deleted) await deleteMemoryEmbedding(env, deleted);
+  await deleteSyncedMemory(env, profile.namespace, id);
   return json({ data: { id: existing.id, vector_id: existing.vector_id, deleted: true } });
 }
 

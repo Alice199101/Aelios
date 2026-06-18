@@ -95,6 +95,8 @@ export async function upsertMemoryEmbedding(env: Env, memory: MemoryRecord): Pro
         status: memory.status,
         type: memory.type,
         fact_key: memory.fact_key || "",
+        thread: memory.thread || "",
+        risk_level: memory.risk_level || "",
         pinned: Boolean(memory.pinned),
       }
     }

@@ -1,5 +1,5 @@
 import { listMessagesByNamespaceInRange } from "../db/messages";
-import { createMemory, getMemoryById, listMemoriesPage, softDeleteMemory, updateMemory } from "../db/memories";
+import { getMemoryById, listMemoriesPage } from "../db/memories";
 import { readCursor, writeCursor } from "../db/retention";
 import { upsertSummary } from "../db/summaries";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
@@ -12,9 +12,13 @@ import {
   normalizeThread,
   normalizeUrgencyLevel
 } from "./coordinates";
-import { upsertMemoryEmbedding, deleteMemoryEmbedding } from "./embedding";
 import type { ExtractedMemory } from "./extract";
 import { toMemoryApiRecord } from "./search";
+import {
+  createSyncedMemory,
+  patchSyncedMemory,
+  deleteSyncedMemory,
+} from "./state";
 
 interface DigestMemoryUpdate {
   target_id: string;
@@ -645,7 +649,7 @@ async function cleanEmptyMemories(
   const records = page.records.filter((record) => !record.pinned && record.content.trim().length < minChars);
 
   for (const record of records) {
-    await softDeleteMemory(env.DB, { namespace, id: record.id });
+    await deleteSyncedMemory(env, namespace, record.id);
   }
 
   return records.length;
@@ -655,7 +659,7 @@ async function saveDailySummaryMemory(
   env: Env,
   input: { namespace: string; dateLabel: string; content: string; messageIds: string[] }
 ): Promise<void> {
-  const created = await createMemory(env.DB, {
+  await createSyncedMemory(env, {
     namespace: input.namespace,
     type: "daily_summary",
     content: input.content,
@@ -665,7 +669,6 @@ async function saveDailySummaryMemory(
     source: "dream",
     sourceMessageIds: input.messageIds
   });
-  await upsertMemoryEmbedding(env, created);
 }
 
 function shouldSaveDailySummaryMemory(env: Env): boolean {
@@ -687,7 +690,7 @@ async function saveImportantExcerpts(
       .filter(Boolean)
       .join("\n");
 
-    const created = await createMemory(env.DB, {
+    await createSyncedMemory(env, {
       namespace: input.namespace,
       type: "excerpt",
       content,
@@ -697,7 +700,6 @@ async function saveImportantExcerpts(
       source: "dream",
       sourceMessageIds: excerpt.source_message_ids?.length ? excerpt.source_message_ids : input.fallbackMessageIds
     });
-    await upsertMemoryEmbedding(env, created);
     saved += 1;
   }
 
@@ -715,35 +717,27 @@ async function applyMemoryUpdates(
     const existing = await getMemoryById(env.DB, { namespace: input.namespace, id: item.target_id });
     if (!existing || existing.status !== "active") continue;
 
-    const next = await updateMemory(env.DB, {
-      namespace: input.namespace,
-      id: item.target_id,
-      patch: {
-        type: item.type,
-        content: item.content,
-        importance: item.importance,
-        confidence: item.confidence,
-        tags: item.tags,
-        factKey: item.fact_key,
-        thread: item.thread,
-        riskLevel: item.risk_level,
-        urgencyLevel: item.urgency_level,
-        tensionScore: item.tension_score,
-        responsePosture: item.response_posture
-      }
+    const next = await patchSyncedMemory(env, input.namespace, item.target_id, {
+      type: item.type,
+      content: item.content,
+      importance: item.importance,
+      confidence: item.confidence,
+      tags: item.tags,
+      factKey: item.fact_key,
+      thread: item.thread,
+      riskLevel: item.risk_level,
+      urgencyLevel: item.urgency_level,
+      tensionScore: item.tension_score,
+      responsePosture: item.response_posture
     });
 
-    if (next) {
-      await upsertMemoryEmbedding(env, next);
-      updated += 1;
-    }
+    if (next) updated += 1;
   }
 
   for (const item of input.deletes) {
     const existing = await getMemoryById(env.DB, { namespace: input.namespace, id: item.target_id });
     if (!existing || existing.status !== "active" || existing.pinned) continue;
-    const result = await softDeleteMemory(env.DB, { namespace: input.namespace, id: item.target_id });
-    if (result) await deleteMemoryEmbedding(env, result);
+    await deleteSyncedMemory(env, input.namespace, item.target_id);
     deleted += 1;
   }
 
@@ -859,7 +853,7 @@ export async function runDailyMemoryDigest(
 
   let addedMemories = 0;
   for (const memory of digest.memories_to_add ?? []) {
-    const saved = await createMemory(env.DB, {
+    const saved = await createSyncedMemory(env, {
       namespace,
       type: memory.type,
       content: memory.content,
@@ -875,10 +869,7 @@ export async function runDailyMemoryDigest(
       source: "dream",
       sourceMessageIds: memory.source_message_ids.length ? memory.source_message_ids : messageIds
     });
-    if (saved) {
-      await upsertMemoryEmbedding(env, saved);
-      addedMemories += 1;
-    }
+    if (saved) addedMemories += 1;
   }
 
   const savedExcerpts = await saveImportantExcerpts(env, {

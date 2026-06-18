@@ -1,10 +1,13 @@
-import { createMemoryEvent } from "../db/memoryEvents";
-import { createMemory, getMemoryById, listActiveMemoriesByFactKey, updateMemory } from "../db/memories";
+import { getMemoryById, listActiveMemoriesByFactKey } from "../db/memories";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
-import { upsertMemoryEmbedding } from "./embedding";
 import type { ExtractedMemory } from "./extract";
 import { searchMemories, toMemoryApiRecord } from "./search";
+import {
+  createSyncedMemory,
+  patchSyncedMemory,
+  supersedeSyncedMemory,
+} from "./state";
 
 const MERGE_CANDIDATE_TOP_K = 5;
 const MERGE_SCORE_THRESHOLD = 0.82;
@@ -237,8 +240,25 @@ async function findMergeCandidates(
   });
 }
 
+const SINGLE_SLOT_FACT_KEY_PATTERNS = [
+  /^user:preferred_name$/,
+  /^user:timezone$/,
+  /^user:location$/,
+  /^project:[^:]+:current_status$/,
+  /^setting:/,
+  /^user:birthday$/,
+  /^user:pronouns$/,
+  /^user:language$/,
+];
+
+function isSingleSlotFactKey(factKey: string): boolean {
+  return SINGLE_SLOT_FACT_KEY_PATTERNS.some((pattern) => pattern.test(factKey));
+}
+
 function chooseFactKeyDecision(incoming: ExtractedMemory, candidates: MemoryApiRecord[]): MemoryMergeDecision | null {
   if (!incoming.fact_key) return null;
+  if (!isSingleSlotFactKey(incoming.fact_key)) return null;
+
   const target = candidates.find((candidate) => candidate.fact_key === incoming.fact_key && !candidate.pinned);
   if (!target) return null;
   return {
@@ -253,7 +273,7 @@ function chooseFactKeyDecision(incoming: ExtractedMemory, candidates: MemoryApiR
 }
 
 async function createNewMemory(env: Env, input: PersistMemoryInput): Promise<MemoryRecord> {
-  const created = await createMemory(env.DB, {
+  return createSyncedMemory(env, {
     namespace: input.namespace,
     type: input.memory.type,
     content: input.memory.content,
@@ -269,9 +289,6 @@ async function createNewMemory(env: Env, input: PersistMemoryInput): Promise<Mem
     tensionScore: input.memory.tension_score,
     responsePosture: input.memory.response_posture
   });
-
-  await upsertMemoryEmbedding(env, created);
-  return created;
 }
 
 function resolveTarget(decision: MemoryMergeDecision, candidates: MemoryApiRecord[]): MemoryApiRecord | null {
@@ -313,68 +330,53 @@ export async function persistMemoryWithMerge(
   if (decision.action === "merge") {
     if (!decision.content) return createNewMemory(env, input);
 
-    const merged = await updateMemory(env.DB, {
-      namespace: input.namespace,
-      id: existing.id,
-      patch: {
-        type: decision.type ?? input.memory.type ?? existing.type,
-        content: decision.content,
-        importance: Math.max(existing.importance, clampScore(decision.importance, input.memory.importance)),
-        confidence: Math.max(existing.confidence, clampScore(decision.confidence, input.memory.confidence)),
-        tags: uniqueStrings([...parseJsonArray(existing.tags), ...input.memory.tags, ...(decision.tags ?? [])]),
-        sourceMessageIds: uniqueStrings([...parseJsonArray(existing.source_message_ids), ...input.sourceMessageIds]),
-        factKey: input.memory.fact_key ?? existing.fact_key,
-        thread: input.memory.thread ?? existing.thread,
-        riskLevel: input.memory.risk_level ?? existing.risk_level,
-        urgencyLevel: input.memory.urgency_level ?? existing.urgency_level,
-        tensionScore: input.memory.tension_score ?? existing.tension_score,
-        responsePosture: input.memory.response_posture ?? existing.response_posture
-      }
+    return patchSyncedMemory(env, input.namespace, existing.id, {
+      type: decision.type ?? input.memory.type ?? existing.type,
+      content: decision.content,
+      importance: Math.max(existing.importance, clampScore(decision.importance, input.memory.importance)),
+      confidence: Math.max(existing.confidence, clampScore(decision.confidence, input.memory.confidence)),
+      tags: uniqueStrings([...parseJsonArray(existing.tags), ...input.memory.tags, ...(decision.tags ?? [])]),
+      sourceMessageIds: uniqueStrings([...parseJsonArray(existing.source_message_ids), ...input.sourceMessageIds]),
+      factKey: input.memory.fact_key ?? existing.fact_key,
+      thread: input.memory.thread ?? existing.thread,
+      riskLevel: input.memory.risk_level ?? existing.risk_level,
+      urgencyLevel: input.memory.urgency_level ?? existing.urgency_level,
+      tensionScore: input.memory.tension_score ?? existing.tension_score,
+      responsePosture: input.memory.response_posture ?? existing.response_posture
     });
-
-    if (merged) await upsertMemoryEmbedding(env, merged);
-    return merged;
   }
 
   if (decision.action === "supersede") {
-    const superseded = await updateMemory(env.DB, {
-      namespace: input.namespace,
-      id: existing.id,
-      patch: { status: "superseded" }
-    });
-    if (superseded) {
-      await createMemoryEvent(env.DB, {
+    const result = await supersedeSyncedMemory(
+      env,
+      input.namespace,
+      existing.id,
+      {
         namespace: input.namespace,
-        eventType: "z_conflict",
-        memoryId: superseded.id,
-        payload: {
-          action: "supersede",
-          old_memory_id: superseded.id,
-          incoming_fact_key: input.memory.fact_key ?? superseded.fact_key,
-          old_content: superseded.content,
-          new_content: decision.content ?? input.memory.content,
-          reason: input.memory.fact_key ? "fact_key_match" : "merge_decision"
-        }
-      });
-    }
-
-    return createNewMemory(env, {
-      ...input,
-      memory: {
-        ...input.memory,
         type: decision.type ?? input.memory.type,
         content: decision.content ?? input.memory.content,
         importance: clampScore(decision.importance, input.memory.importance),
         confidence: clampScore(decision.confidence, input.memory.confidence),
         tags: uniqueStrings([...input.memory.tags, ...(decision.tags ?? [])]),
-        fact_key: input.memory.fact_key,
+        source: input.source,
+        sourceMessageIds: input.sourceMessageIds,
+        factKey: input.memory.fact_key,
         thread: input.memory.thread,
-        risk_level: input.memory.risk_level,
-        urgency_level: input.memory.urgency_level,
-        tension_score: input.memory.tension_score,
-        response_posture: input.memory.response_posture
+        riskLevel: input.memory.risk_level,
+        urgencyLevel: input.memory.urgency_level,
+        tensionScore: input.memory.tension_score,
+        responsePosture: input.memory.response_posture
+      },
+      {
+        action: "supersede",
+        old_memory_id: existing.id,
+        incoming_fact_key: input.memory.fact_key ?? existing.fact_key,
+        old_content: existing.content,
+        new_content: decision.content ?? input.memory.content,
+        reason: input.memory.fact_key ? "fact_key_match" : "merge_decision"
       }
-    });
+    );
+    return result.created;
   }
 
   return createNewMemory(env, input);

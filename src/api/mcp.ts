@@ -1,6 +1,6 @@
 import { authenticate } from "../auth/apiKey";
 import { getOrCreateConversation } from "../db/conversations";
-import { createMemory, getMemoryById, listMemoriesPage, softDeleteMemory } from "../db/memories";
+import { getMemoryById, listMemoriesPage } from "../db/memories";
 import { saveIngestMessages } from "../db/messages";
 import {
   normalizeFactKey,
@@ -10,9 +10,9 @@ import {
   normalizeThread,
   normalizeUrgencyLevel
 } from "../memory/coordinates";
-import { upsertMemoryEmbedding, deleteMemoryEmbedding } from "../memory/embedding";
 import { filterAndCompressMemories } from "../memory/filter";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
+import { createSyncedMemory, deleteSyncedMemory } from "../memory/state";
 import { enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
 import type { Env, KeyProfile, Scope } from "../types";
 import { json } from "../utils/json";
@@ -215,7 +215,7 @@ async function callTool(
     if (!content) return toolError("content is required");
     let memory;
     try {
-      const created = await createMemory(env.DB, {
+      const created = await createSyncedMemory(env, {
         namespace: resolveNamespace(profile, args.namespace),
         type: readString(args.type) || "note",
         content,
@@ -233,7 +233,6 @@ async function callTool(
         tensionScore: normalizeTensionScore(args.tension_score),
         responsePosture: normalizeResponsePosture(args.response_posture)
       });
-      await upsertMemoryEmbedding(env, created);
       memory = toMemoryApiRecord(created);
     } catch (error) {
       return toolError(error instanceof Error ? error.message : "memory_create failed");
@@ -283,8 +282,7 @@ async function callTool(
     const existing = await getMemoryById(env.DB, { namespace, id });
     if (!existing) return toolError("Memory not found");
     if (existing.pinned) return toolError("Pinned memory cannot be deleted");
-    const deleted = await softDeleteMemory(env.DB, { namespace, id });
-    if (deleted) await deleteMemoryEmbedding(env, deleted);
+    await deleteSyncedMemory(env, namespace, id);
     return textToolResult({
       data: {
         id,

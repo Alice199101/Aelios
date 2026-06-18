@@ -2,6 +2,7 @@ import { createMemoryEvent } from "../db/memoryEvents";
 import { createMemoryRelation, REVIEW_RELATION_TYPES, SAFE_RELATION_TYPES } from "../db/memoryRelations";
 import { getMemoryById, listFactKeyConflicts, listMemoriesSince, updateMemory } from "../db/memories";
 import type { Env, MemoryRecord } from "../types";
+import { markMemoryReviewSynced } from "./state";
 
 function dayAgoIso(): string {
   return new Date(Date.now() - 86_400_000).toISOString();
@@ -97,11 +98,7 @@ export async function runZAudit(
     });
 
     for (const memory of weaker) {
-      await updateMemory(env.DB, {
-        namespace,
-        id: memory.id,
-        patch: { status: "review", auditState: "weaker_conflict" }
-      });
+      await markMemoryReviewSynced(env, namespace, memory.id, "weaker_conflict");
       reviewed += 1;
     }
   }
