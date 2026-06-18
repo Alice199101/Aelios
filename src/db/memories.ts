@@ -29,6 +29,8 @@ export interface ListMemoryFilters {
   namespace: string;
   type?: string;
   status?: string;
+  thread?: string;
+  factKey?: string;
   limit: number;
   offset?: number;
 }
@@ -145,6 +147,16 @@ export async function listMemoriesPage(db: D1Database, filters: ListMemoryFilter
   if (filters.status) {
     sql += " AND status = ?";
     binds.push(filters.status);
+  }
+
+  if (filters.thread) {
+    sql += " AND thread = ?";
+    binds.push(filters.thread);
+  }
+
+  if (filters.factKey) {
+    sql += " AND fact_key = ?";
+    binds.push(filters.factKey);
   }
 
   const offset = Math.max(Math.floor(filters.offset ?? 0), 0);
