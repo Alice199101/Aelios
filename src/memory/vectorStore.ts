@@ -156,9 +156,13 @@ function getAccountId(env: Env): string | null {
   return env.CLOUDFLARE_ACCOUNT_ID?.trim() || null;
 }
 
+// Recall floor on the raw embedding score from Vectorize, applied BEFORE the
+// reranker. Kept low: embeddinggemma under-scores on-topic-but-reworded hits
+// (~0.15–0.20), so a high floor silently drops relevant memories. The reranker
+// (bge-reranker-base) and the LLM compressor downstream handle precision.
 function getMinScore(env: Env): number {
-  const value = Number(env.MEMORY_MIN_SCORE || 0.35);
-  return Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : 0.35;
+  const value = Number(env.MEMORY_MIN_SCORE || 0.1);
+  return Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : 0.1;
 }
 
 async function getVectorsByIdsBatched(
@@ -402,6 +406,12 @@ export async function searchVectorMemories(
   return [...matchesByVectorId.values()]
     .flatMap((match): MemoryApiRecord[] => {
       if (match.score < getMinScore(env)) return [];
+      // Legacy (unfiltered) query branch is only for migration-era vectors
+      // that may lack a namespace. Require an explicit metadata namespace
+      // matching input.namespace; do not let vectorMetadataToMemoryRecord's
+      // "default" fallback pass through, or a named "default" namespace leaks.
+      const md = (match.metadata || {}) as Record<string, unknown>;
+      if (typeof md.namespace !== "string" || md.namespace !== input.namespace) return [];
       const record = vectorMetadataToMemoryRecord(match, match.score);
       if (!record || record.namespace !== input.namespace) return [];
       if (input.types && input.types.length > 0 && !input.types.includes(record.type)) return [];

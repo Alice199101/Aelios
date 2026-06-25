@@ -37,7 +37,6 @@ export interface Env {
   DAILY_DIGEST_MEMORY_CONTEXT_LIMIT?: string;
   DAILY_DIGEST_EXCERPT_LIMIT?: string;
   DAILY_DIGEST_TIME_ZONE?: string;
-  ENABLE_DAILY_SUMMARY_MEMORY?: string;
   EMPTY_MEMORY_MIN_CHARS?: string;
   MEMORY_MODE?: string;
   MEMORY_BACKEND?: string;
@@ -52,6 +51,7 @@ export interface Env {
   MEMORY_FILTER_OUTPUT_CHARS?: string;
   MEMORY_FILTER_MAX_TOKENS?: string;
   MEMORY_FILTER_MIN_SCORE?: string;
+  MEMORY_FILTER_FAIL_OPEN?: string;
   MEMORY_EXTRACT_EVERY_N_MESSAGES?: string;
   MEMORY_MIN_IMPORTANCE?: string;
   INJECTION_MODE?: string;
@@ -225,15 +225,3 @@ export interface MemoryApiRecord {
   score?: number;
 }
 
-export interface SummaryRecord {
-  id: string;
-  namespace: string;
-  conversation_id: string | null;
-  content: string;
-  from_message_id: string | null;
-  to_message_id: string | null;
-  message_count: number;
-  vector_id: string | null;
-  created_at: string;
-  updated_at: string;
-}

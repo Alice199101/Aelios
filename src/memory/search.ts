@@ -44,9 +44,13 @@ function getTopK(env: Env, requested?: number): number {
   return Math.min(Math.max(value, 1), 200);
 }
 
+// Recall floor on the raw embedding score, applied BEFORE the reranker.
+// Kept low on purpose: embeddinggemma under-scores on-topic-but-reworded hits
+// (~0.15–0.20), so a high floor silently drops relevant memories. Precision is
+// owned downstream by the reranker + LLM compressor, not by this gate.
 function getMinScore(env: Env): number {
-  const value = Number(env.MEMORY_MIN_SCORE || 0.35);
-  return Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : 0.35;
+  const value = Number(env.MEMORY_MIN_SCORE || 0.1);
+  return Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : 0.1;
 }
 
 function getRefId(match: VectorizeMatch): string | null {
@@ -182,8 +186,10 @@ async function searchWithVectorize(
   if (!vector) return null;
 
   let result = await queryVectorize(env, vector, input, true);
+  let usedUnfilteredFallback = false;
   if (result.matches.length === 0) {
     result = await queryVectorize(env, vector, input, false);
+    usedUnfilteredFallback = true;
   }
 
   const minScore = getMinScore(env);
@@ -192,6 +198,19 @@ async function searchWithVectorize(
 
   for (const match of result.matches) {
     if (match.score < minScore) continue;
+
+    // Unfiltered fallback can return vectors from any namespace. Force a
+    // strict metadata filter here so foreign-namespace memories never leak in
+    // via toLegacyMemoryRecord's input.namespace fallback. Vectors without an
+    // explicit namespace field are dropped — we do NOT fall back to
+    // input.namespace (that is the bug this guard prevents).
+    if (usedUnfilteredFallback) {
+      const md = (match.metadata || {}) as Record<string, unknown>;
+      if (typeof md.namespace !== "string" || md.namespace !== input.namespace) continue;
+      const status = md.status;
+      if (status !== undefined && status !== "active") continue;
+    }
+
     const id = getRefId(match);
     if (id) scoredIds.set(id, match.score);
     const legacy = toLegacyMemoryRecord(match, input);

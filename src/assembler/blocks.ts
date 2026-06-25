@@ -1,5 +1,5 @@
 /**
- * 10 block implementations for the v4 Prompt Assembler.
+ * 9 block implementations for the v4 Prompt Assembler.
  *
  * Each block's content_fn must be deterministic: same ctx → same string.
  * No timestamps, no request ids, no Map iteration order.
@@ -8,8 +8,7 @@
  * AssembledPrompt.messages with original content preserved, NOT to system_blocks.
  *
  * This module is self-contained; it does NOT import from memory/inject.ts
- * or the adapters. The adapters will be rewired to consume AssembledPrompt
- * in a later phase (P1.3).
+ * or the adapters.
  */
 
 import type { MemoryApiRecord, OpenAIChatMessage } from "../types";
@@ -20,10 +19,7 @@ import type {
   Block,
   SystemBlock,
 } from "./types";
-import {
-  BLOCK_ORDER,
-  SUMMARY_MAX_CHARS,
-} from "./types";
+import { BLOCK_ORDER } from "./types";
 
 // ---------------------------------------------------------------------------
 // Local helpers (no external imports — keeps assembler self-contained)
@@ -127,31 +123,7 @@ const personaPinnedBlock: Block = {
 };
 
 // ---------------------------------------------------------------------------
-// Block 3: long_term_summary (stable)
-// Latest summary entry, truncated to SUMMARY_MAX_CHARS.
-// ---------------------------------------------------------------------------
-
-function truncateSummary(content: string, maxChars: number): string {
-  if (content.length <= maxChars) return content;
-  return content.slice(0, maxChars - 3) + "...";
-}
-
-const longTermSummaryBlock: Block = {
-  id: "long_term_summary",
-  kind: "stable",
-  role: "system",
-  cache_anchor: false,
-  content_fn: (ctx: AssemblerContext): string | null => {
-    const entry = ctx.summaryEntry;
-    if (!entry || !entry.content) return null;
-
-    const truncated = truncateSummary(entry.content, SUMMARY_MAX_CHARS);
-    return `长期对话摘要：\n${truncated}`;
-  },
-};
-
-// ---------------------------------------------------------------------------
-// Block 4: preset_lite (stable)
+// Block 3: preset_lite (stable)
 // Fixed string from plan §5.1, ≤300 chars, hardcoded constant.
 // ---------------------------------------------------------------------------
 
@@ -173,7 +145,7 @@ const presetLiteBlock: Block = {
 };
 
 // ---------------------------------------------------------------------------
-// Block 5: client_system (stable, cache_anchor = true)
+// Block 4: client_system (stable, cache_anchor = true)
 // Frontend system messages concatenated.
 // ---------------------------------------------------------------------------
 
@@ -242,7 +214,7 @@ const clientSystemBlock: Block = {
 };
 
 // ---------------------------------------------------------------------------
-// Block 5.5: client_volatile_context (dynamic)
+// Block 4.5: client_volatile_context (dynamic)
 // Frontend time/date lines split out of client_system so they do not poison
 // the stable Claude prompt-cache anchor.
 // ---------------------------------------------------------------------------
@@ -265,7 +237,7 @@ const clientVolatileContextBlock: Block = {
 };
 
 // ---------------------------------------------------------------------------
-// Block 6: dynamic_memory_patch (dynamic)
+// Block 5: dynamic_memory_patch (dynamic)
 // Current RAG hits, tagged <memories>...</memories>.
 // ---------------------------------------------------------------------------
 
@@ -295,7 +267,7 @@ const dynamicMemoryPatchBlock: Block = {
 };
 
 // ---------------------------------------------------------------------------
-// Block 7: vision_context (dynamic)
+// Block 6: vision_context (dynamic)
 // Vision assistant output; only when image present + main model non-multimodal.
 // ---------------------------------------------------------------------------
 
@@ -311,7 +283,7 @@ const visionContextBlock: Block = {
 };
 
 // ---------------------------------------------------------------------------
-// Block 8: recent_history (passthrough)
+// Block 7: recent_history (passthrough)
 // Frontend messages excluding system and the final user message.
 // Routes to AssembledPrompt.messages with original content preserved.
 // History strip (§5.2 regex) will be applied in P2.
@@ -327,7 +299,7 @@ const recentHistoryBlock: Block = {
 };
 
 // ---------------------------------------------------------------------------
-// Block 9: current_user (passthrough)
+// Block 8: current_user (passthrough)
 // The last user message, untouched — original content preserved.
 // Routes to AssembledPrompt.messages.
 // ---------------------------------------------------------------------------
@@ -348,7 +320,6 @@ const currentUserBlock: Block = {
 const BLOCK_MAP = new Map<string, Block>([
   [proxyStaticRulesBlock.id, proxyStaticRulesBlock],
   [personaPinnedBlock.id, personaPinnedBlock],
-  [longTermSummaryBlock.id, longTermSummaryBlock],
   [presetLiteBlock.id, presetLiteBlock],
   [clientSystemBlock.id, clientSystemBlock],
   [clientVolatileContextBlock.id, clientVolatileContextBlock],
