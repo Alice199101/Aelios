@@ -514,15 +514,12 @@ export async function listVectorMemories(
   let hasMore = true;
   let scannedPages = 0;
   let lastCursor: string | null = null;
-  let rawTotalCount: number | undefined;
 
   const vectorize = requireVectorize(env);
 
   while (filtered.length < input.count && hasMore && scannedPages < MAX_FILTER_SCAN_PAGES) {
     const listed = await listVectorIdsViaApi(env, { ...input, cursor: cursor ?? undefined });
     const vectors = listed.ids.length > 0 ? await getVectorsByIdsBatched(vectorize, listed.ids) : [];
-
-    if (rawTotalCount === undefined) rawTotalCount = listed.totalCount;
 
     for (const vector of vectors) {
       const record = vectorMetadataToMemoryRecord(vector, undefined, { includeInactive });
