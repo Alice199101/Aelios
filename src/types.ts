@@ -20,6 +20,21 @@ export interface Env {
   ENABLE_AUTO_MEMORY?: string;
   ENABLE_INCREMENTAL_MEMORY?: string;
   ENABLE_DREAM?: string;
+  // --- Aelios 记忆库 v2 opt-in 开关 (母帖 #11 第 0 步) ---
+  // 总开关：全 false 时下面所有 v2 行为都不生效，跟 v1 一致。
+  MEMORY_LIFECYCLE_ENABLED?: string;
+  // dream 策略：legacy | upsert | review
+  DREAM_STRATEGY?: string;
+  // 写入模式：append | upsert
+  MEMORY_WRITE_MODE?: string;
+  // patrol 是否只出提案不自动删
+  MEMORY_PATROL_DRY_RUN?: string;
+  // 是否允许自动删（默认 false 锁死）
+  MEMORY_AUTO_DELETE?: string;
+  // 闸三降权窗口 (分钟)，默认 30
+  MEMORY_INJECT_DECAY_WINDOW_MIN?: string;
+  // 闸三降权系数 (0-1)，默认 0.5
+  MEMORY_INJECT_DECAY_FACTOR?: string;
   ENABLE_DAILY_MEMORY_DIGEST?: string;
   DREAM_NAMESPACE?: string;
   DREAM_MAX_MESSAGES?: string;
@@ -201,6 +216,15 @@ export interface MemoryRecord {
   created_at: string;
   updated_at: string;
   expires_at: string | null;
+  // --- v2 字段 (母帖 #11 第 1 步，可选，老代码读不到就忽略) ---
+  fact_key?: string | null;
+  supersedes_id?: string | null;
+  superseded_by_id?: string | null;
+  review_reason?: string | null;
+  valid_as_of?: string | null;
+  last_seen_at?: string | null;
+  seen_count?: number;
+  last_injected_at?: string | null;
 }
 
 export interface MemoryApiRecord {
@@ -223,5 +247,14 @@ export interface MemoryApiRecord {
   updated_at: string;
   expires_at: string | null;
   score?: number;
+  // --- v2 字段 (母帖 #11 第 1 步) ---
+  fact_key?: string | null;
+  supersedes_id?: string | null;
+  superseded_by_id?: string | null;
+  review_reason?: string | null;
+  valid_as_of?: string | null;
+  last_seen_at?: string | null;
+  seen_count?: number;
+  last_injected_at?: string | null;
 }
 

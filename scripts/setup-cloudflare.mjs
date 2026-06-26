@@ -198,11 +198,14 @@ function ensureVectorize() {
 
   ensureVectorizeBinding();
 
+  // v2: kind 区分 memory | precious | longtail (母帖 #11 第 1 步)。
+  // 没有这个 metadata index，按 kind 过滤会全表扫，接不上召回管线。
   const indexes = [
     ["namespace", "string"],
     ["status", "string"],
     ["type", "string"],
-    ["pinned", "boolean"]
+    ["pinned", "boolean"],
+    ["kind", "string"]
   ];
 
   for (const [propertyName, type] of indexes) {
