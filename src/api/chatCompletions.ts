@@ -8,7 +8,6 @@ import { assemble } from "../assembler/assemble";
 import { enqueueMemoryMaintenanceIfNeeded, enqueueRetentionIfNeeded } from "../queue/producer";
 import { buildBootPackage, isV2Enabled, runRecall } from "../memory/v2/recall";
 import {
-  buildAnthropicNativeRequest,
   buildAnthropicRequestFromAssembled,
   callAnthropicNative,
   getAnthropicCacheMode,
@@ -143,51 +142,30 @@ export async function handleChatCompletions(
   let cacheAnchorBlock: string | null = null;
   try {
     if (provider === "anthropic") {
-      if (hasToolRound(body)) {
-        const anthropicRequest = await buildAnthropicNativeRequest(body, {
-          env,
-          targetModel,
-          namespace,
-          boot,
-          recallHits: recallHitsAsMemories
-        });
-        upstream = await callAnthropicNative(env, anthropicRequest, targetModel);
-      } else {
-        const assembled = assemble({
-          request: body,
-          pinnedPersonaMemories: null,
-          boot,
-          ragMemories: recallHitsAsMemories,
-          visionOutput: null,
-        });
-        clientSystemHash = assembled.meta.client_system_hash;
-        cacheAnchorBlock = assembled.meta.anchor_index >= 0 ? "client_system" : null;
-        // NOTE: Anthropic adapter stringifies structured content (image_url etc.)
-        // as a temporary fallback; native Anthropic image support will be added
-        // when the vision pipeline is wired in.
-        upstream = await callAnthropicNative(env, buildAnthropicRequestFromAssembled(body, targetModel, assembled, env), targetModel);
-      }
+      // Always use assembler path — it handles tools, tool_calls, tool_results,
+      // and the 4-breakpoint cache strategy. The old native path is only needed
+      // for edge cases where the assembler can't handle the request.
+      const assembled = assemble({
+        request: body,
+        pinnedPersonaMemories: null,
+        boot,
+        ragMemories: recallHitsAsMemories,
+        visionOutput: null,
+      });
+      clientSystemHash = assembled.meta.client_system_hash;
+      cacheAnchorBlock = assembled.meta.anchor_index >= 0 ? "persona_pinned" : null;
+      upstream = await callAnthropicNative(env, buildAnthropicRequestFromAssembled(body, targetModel, assembled, env), targetModel);
     } else {
-      if (hasToolRound(body)) {
-        const assembled = assemble({
-          request: body,
-          pinnedPersonaMemories: null,
-          boot,
-          ragMemories: recallHitsAsMemories,
-          visionOutput: null,
-        });
-        upstream = await callOpenAICompat(env, buildOpenAIRequestFromAssembled(body, targetModel, assembled));
-      } else {
-        const assembled = assemble({
-          request: body,
-          pinnedPersonaMemories: null,
-          boot,
-          ragMemories: recallHitsAsMemories,
-          visionOutput: null,
-        });
-        clientSystemHash = assembled.meta.client_system_hash;
-        upstream = await callOpenAICompat(env, buildOpenAIRequestFromAssembled(body, targetModel, assembled));
-      }
+      // OpenAI-compatible: always use assembler path
+      const assembled = assemble({
+        request: body,
+        pinnedPersonaMemories: null,
+        boot,
+        ragMemories: recallHitsAsMemories,
+        visionOutput: null,
+      });
+      clientSystemHash = assembled.meta.client_system_hash;
+      upstream = await callOpenAICompat(env, buildOpenAIRequestFromAssembled(body, targetModel, assembled));
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to call upstream";
