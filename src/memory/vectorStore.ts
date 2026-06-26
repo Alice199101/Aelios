@@ -44,6 +44,8 @@ export interface VectorMemoryListInput {
   namespace?: string;
   cursor?: string;
   count: number;
+  type?: string;
+  status?: string;
 }
 
 export interface VectorMemoryListPage {
@@ -484,16 +486,18 @@ export async function listVectorMemories(
       const record = vectorMetadataToMemoryRecord(vector);
       if (!record) return [];
       if (input.namespace && record.namespace !== input.namespace) return [];
+      if (input.type && record.type !== input.type) return [];
+      if (input.status && record.status !== input.status) return [];
       return [record];
     })
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.importance - a.importance || b.updated_at.localeCompare(a.updated_at));
 
   return {
     data,
-    ids: listed.ids,
+    ids: data.map((record) => record.id),
     cursor: listed.cursor,
     hasMore: listed.hasMore,
-    count: listed.ids.length,
+    count: data.length,
     totalCount: listed.totalCount
   };
 }
