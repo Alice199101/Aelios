@@ -344,18 +344,32 @@ export interface MemoryV2Patch {
   validAsOf?: string | null;
 }
 
+const SQLITE_BIND_BATCH_SIZE = 100;
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim()))];
+}
+
 // 批量查侧车行 (search.ts 合并 v2 字段用)。不存在的 memory_id 不返回。
+// D1/SQLite has a hard variable limit; never put hundreds of ids into one IN (...).
 export async function fetchMemoryLifecycleRows(
   db: D1Database,
   memoryIds: string[]
 ): Promise<MemoryLifecycleRow[]> {
-  if (memoryIds.length === 0) return [];
-  const placeholders = memoryIds.map(() => "?").join(", ");
-  const result = await db
-    .prepare(`SELECT * FROM memory_lifecycle WHERE memory_id IN (${placeholders})`)
-    .bind(...memoryIds)
-    .all<MemoryLifecycleRow>();
-  return result.results ?? [];
+  const ids = uniqueStrings(memoryIds);
+  if (ids.length === 0) return [];
+
+  const rows: MemoryLifecycleRow[] = [];
+  for (let index = 0; index < ids.length; index += SQLITE_BIND_BATCH_SIZE) {
+    const batch = ids.slice(index, index + SQLITE_BIND_BATCH_SIZE);
+    const placeholders = batch.map(() => "?").join(", ");
+    const result = await db
+      .prepare(`SELECT * FROM memory_lifecycle WHERE memory_id IN (${placeholders})`)
+      .bind(...batch)
+      .all<MemoryLifecycleRow>();
+    rows.push(...(result.results ?? []));
+  }
+  return rows;
 }
 
 // 按 fact_key upsert：同 namespace + fact_key 已有 active 就更新，否则新增。
@@ -597,25 +611,32 @@ export async function markMemoriesInjected(
   db: D1Database,
   input: { namespace: string; ids: string[] }
 ): Promise<void> {
-  if (input.ids.length === 0) return;
-  const placeholders = input.ids.map(() => "?").join(", ");
+  const ids = uniqueStrings(input.ids);
+  if (ids.length === 0) return;
+  const injectedAt = nowIso();
+
   // 没有侧车行的 memory_id 用 INSERT OR IGNORE 自动建一行 (只有 last_injected_at)。
   // 这样老 v1 记忆第一次被注入也能记账。
-  for (const id of input.ids) {
+  for (const id of ids) {
     await db
       .prepare(
         `INSERT OR IGNORE INTO memory_lifecycle (memory_id, namespace, seen_count, last_injected_at)
          VALUES (?, ?, 0, ?)`
       )
-      .bind(id, input.namespace, nowIso())
+      .bind(id, input.namespace, injectedAt)
       .run();
   }
-  await db
-    .prepare(
-      `UPDATE memory_lifecycle SET last_injected_at = ? WHERE memory_id IN (${placeholders})`
-    )
-    .bind(nowIso(), ...input.ids)
-    .run();
+
+  for (let index = 0; index < ids.length; index += SQLITE_BIND_BATCH_SIZE) {
+    const batch = ids.slice(index, index + SQLITE_BIND_BATCH_SIZE);
+    const placeholders = batch.map(() => "?").join(", ");
+    await db
+      .prepare(
+        `UPDATE memory_lifecycle SET last_injected_at = ? WHERE memory_id IN (${placeholders})`
+      )
+      .bind(injectedAt, ...batch)
+      .run();
+  }
 }
 
 export async function listActiveMemories(
