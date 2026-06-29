@@ -435,13 +435,14 @@ function buildDigestPrompt(input: {
 }): string {
   return [
     "你是 Aelios 的 nightly dream 记忆整理器。你的任务不是简单总结，而是在用户休息时整理长期记忆。",
-    "你会读取旧长期记忆和当天聊天 transcript，产出一份更干净、更一致、更有用的 memory store 更新计划。",
+    "你会读取旧长期记忆和当天聊天 transcript，产出一份更干净、更一致、更有用的 memory store 整理计划。",
     "只输出 JSON，不要 markdown，不要解释，不要输出思考过程。",
     "",
     "Dream 目标：",
     "- 合并重复记忆，避免同一事实以多个版本长期存在。",
     "- 发现过时、被新信息否定、互相矛盾的旧记忆，并更新或删除。",
-    "- 从聊天中提炼未来会影响回答的稳定偏好、项目状态、关系事实、承诺、边界和重要原文。",
+    "- 检查当天小批抽取已经入库的记忆和旧记忆之间是否重复、过时或冲突。",
+    "- 保留关键原文摘录，重写一份简洁的 L1 摘要。",
     "- 形成下一次对话可直接使用的简洁记忆，而不是保存流水账。",
     "",
     "窗口：",
@@ -453,6 +454,7 @@ function buildDigestPrompt(input: {
     "- 宁可少记，也不要把临时语气、寒暄、重复话、空内容、调试内容写进长期记忆。",
     "- 当旧记忆和新信息冲突时，优先更新或删除旧记忆，不要并排留下互相打架的版本。",
     "- 当新信息只是旧记忆的更准确版本，优先 memories_to_update，不要 memories_to_add。",
+    "- v2 的首次抽取已由每 4 小时 extractor 负责；memories_to_add 默认给空数组，不要把当天聊天首次抽取成新长期记忆。",
     "- 当多条旧记忆重复，保留更完整的一条并删除重复项；必要时先 update 保留项。",
     "- pinned=true 的旧记忆不能删除，只能在 memories_to_update 中提出更保守的补充。",
     "- 站在“我=助手”的视角写。关于用户，用“你……”；关于助手承诺，用“我需要……”。",
@@ -463,8 +465,7 @@ function buildDigestPrompt(input: {
     "- summary 写成一段简短自然中文，描述这次 dream 整理出了什么。",
     "- sections 最多 3 段，每段有 heading 和 content；没有必要可以给空数组。",
     `- important_excerpts 最多 ${input.excerptLimit} 条，quote 必须是值得保留的原文片段。`,
-    "- memories_to_add 最多 8 条，每条要短、稳定、可复用。",
-    "- memories_to_add 里的稳定事实必须给 fact_key，格式用小写 ASCII 分组键，例如 project:aelios-memory-v2、preference:answer-style、relationship:boundary。没有稳定 key 才省略。",
+    "- memories_to_add 保留兼容字段，v2 下默认输出空数组。",
     "- memories_to_update 只针对给出的旧记忆 id。",
     "- memories_to_delete 只删除空、重复、明显过期或被新信息否定的旧记忆。",
     "- 控制总输出长度，宁可少写也不要输出超长 JSON。",
@@ -483,17 +484,7 @@ function buildDigestPrompt(input: {
           source_message_ids: ["msg_x"]
         }
       ],
-      memories_to_add: [
-        {
-          type: "project",
-          content: "你正在简化 Aelios 的记忆写入策略。",
-          importance: 0.86,
-          confidence: 0.92,
-          tags: ["project", "aelios"],
-          fact_key: "project:aelios-memory-v2",
-          source_message_ids: ["msg_x"]
-        }
-      ],
+      memories_to_add: [],
       memories_to_update: [
         {
           target_id: "mem_x",
@@ -738,50 +729,15 @@ async function applyDreamV2(
 ): Promise<{ added: number; updated: number; deleted: number; excerpts: number; longtail: number }> {
   const { namespace, strategy, dateLabel, digest, messageIds } = input;
   const isReview = strategy === "review";
-  let added = 0, updated = 0, deleted = 0, longtailCount = 0;
+  const added = 0;
+  let updated = 0, deleted = 0, longtailCount = 0;
 
   if (isReview) {
     await recordDreamReviewProposal(env, { namespace, dateLabel, digest, messageIds });
     return { added: 0, updated: 0, deleted: 0, excerpts: 0, longtail: 0 };
   }
 
-  for (const memory of digest.memories_to_add ?? []) {
-    const factKey = memory.fact_key ?? null;
-    if (factKey) {
-      const result = await upsertMemoryByFactKey(env, {
-        namespace,
-        factKey,
-        content: memory.content,
-        type: memory.type,
-        importance: memory.importance,
-        confidence: memory.confidence,
-        tags: memory.tags,
-        source: "dream",
-        sourceMessageIds: memory.source_message_ids.length ? memory.source_message_ids : messageIds
-      });
-      if (result.created) {
-        added++;
-        if (isReview) {
-          await env.DB.prepare(
-            "UPDATE memory_lifecycle SET review_reason = ? WHERE memory_id = ?"
-          ).bind("dream_proposal", result.id).run();
-        }
-      }
-    } else {
-      const saved = await createVectorMemory(env, {
-        namespace,
-        type: memory.type,
-        content: memory.content,
-        importance: memory.importance,
-        confidence: memory.confidence,
-        tags: memory.tags,
-        source: "dream",
-        sourceMessageIds: memory.source_message_ids.length ? memory.source_message_ids : messageIds
-      });
-      if (saved) added++;
-    }
-  }
-
+  // v2 首次抽取由每 4 小时 extractor 负责；dream 只整理、更新、删除和写 L1/daily_log。
   for (const item of digest.memories_to_update ?? []) {
     const existing = await getVectorMemory(env, item.target_id);
     if (!existing || existing.namespace !== namespace || existing.status !== "active") continue;
@@ -841,7 +797,7 @@ async function applyDreamV2(
     ]
       .filter(Boolean)
       .join("\n");
-    await upsertDigest(env.DB, { namespace, content: digestContent });
+    await upsertDigest(env.DB, { namespace, content: truncate(digestContent, 500) });
   }
 
   await upsertDailyLog(env.DB, {

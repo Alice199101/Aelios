@@ -46,6 +46,12 @@ export interface Env {
   DREAM_MEMORY_CONTEXT_LIMIT?: string;
   DREAM_EXCERPT_LIMIT?: string;
   DREAM_TIME_ZONE?: string;
+  EXTRACT_MODEL?: string;
+  EXTRACT_MAX_MESSAGES?: string;
+  EXTRACT_MAX_RUNS?: string;
+  EXTRACT_MAX_TOKENS?: string;
+  EXTRACT_REVIEW_CONFIDENCE?: string;
+  DEDUP_COSINE?: string;
   DAILY_DIGEST_MAX_MESSAGES?: string;
   DAILY_DIGEST_MAX_RUNS?: string;
   DAILY_DIGEST_MAX_TOKENS?: string;

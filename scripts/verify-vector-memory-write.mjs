@@ -21,6 +21,10 @@ const searchSource = readFileSync(resolve(root, "src/memory/search.ts"), "utf8")
 const digestSource = readFileSync(resolve(root, "src/memory/dailyDigest.ts"), "utf8");
 const recallSource = readFileSync(resolve(root, "src/memory/v2/recall.ts"), "utf8");
 const mcpSource = readFileSync(resolve(root, "src/api/mcp.ts"), "utf8");
+const extractSource = readFileSync(resolve(root, "src/memory/extractPipeline.ts"), "utf8");
+const indexSource = readFileSync(resolve(root, "src/index.ts"), "utf8");
+const wranglerSource = readFileSync(resolve(root, "wrangler.toml"), "utf8");
+const queueProducerSource = readFileSync(resolve(root, "src/queue/producer.ts"), "utf8");
 
 function indexOfOrThrow(haystack, needle) {
   const index = haystack.indexOf(needle);
@@ -92,5 +96,25 @@ assert.match(recallSource, /if \(hit\.score >= minScore\) return true;\s+floored
 assert.match(recallSource, /floored_ids: flooredIds,\s+floored_count: flooredIds\.length,\s+min_score: minScore,/s);
 assert.match(mcpSource, /min_score: \{ type: "number", minimum: 0, maximum: 1 \}/);
 assert.match(mcpSource, /min_score: typeof args\.min_score === "number" \? readNumber\(args\.min_score, 0\.15\) : undefined/);
+assert.match(wranglerSource, /crons = \["0 \*\/4 \* \* \*", "10 20 \* \* \*"\]/);
+assert.match(wranglerSource, /EXTRACT_MODEL = "deepseek\/deepseek-v4-flash"/);
+assert.match(wranglerSource, /DEDUP_COSINE = "0\.9"/);
+assert.match(indexSource, /const EXTRACT_CRON = "0 \*\/4 \* \* \*"/);
+assert.match(indexSource, /runMemoryExtractionBatches\(env, namespace, \{ scheduledTime: controller\.scheduledTime \}\)/);
+assert.match(queueProducerSource, /if \(isV2Enabled\(env\)\) return;/);
+assert.match(extractSource, /const DEFAULT_EXTRACT_MODEL = "deepseek\/deepseek-v4-flash"/);
+assert.match(extractSource, /const DEFAULT_DEDUP_COSINE = 0\.9/);
+assert.match(extractSource, /function cosineSimilarity\(a: number\[\], b: number\[\]\): number/);
+assert.match(extractSource, /async function isSameFactByEmbedding/);
+assert.match(extractSource, /function previousWindowStartIso\(endIso: string\): string/);
+assert.match(extractSource, /const startIso = cursor \?\? previousWindowStartIso\(endIso\);/);
+assert.match(extractSource, /getActiveMemoryByFactKey\(env\.DB, \{ namespace: input\.namespace, factKey \}\)/);
+assert.match(extractSource, /await isSameFactByEmbedding\(env, \{/);
+assert.match(extractSource, /await supersedeMemory\(env, \{/);
+assert.match(extractSource, /findEmbeddingDuplicate\(env,/);
+assert.match(readFileSync(resolve(root, "src/db/v2.ts"), "utf8"), /await db\.batch\(\[ensureLifecycle, markSeen\]\);/);
+assert.match(digestSource, /v2 首次抽取由每 4 小时 extractor 负责/);
+assert.doesNotMatch(digestSource, /for \(const memory of digest\.memories_to_add \?\? \[\]\) \{\s+const factKey/s);
+assert.doesNotMatch(digestSource, /added \+= 0/);
 
 console.log("verify-vector-memory-write: all checks passed");

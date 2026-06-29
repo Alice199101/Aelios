@@ -116,25 +116,6 @@ function getTools(): Array<Record<string, unknown>> {
       }
     },
     {
-      name: "memory_create",
-      description: "Create one long-term memory.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          content: { type: "string" },
-          type: { type: "string" },
-          summary: { type: "string" },
-          importance: { type: "number" },
-          confidence: { type: "number" },
-          pinned: { type: "boolean" },
-          tags: { type: "array", items: { type: "string" } },
-          source: { type: "string" },
-          namespace: { type: "string" }
-        },
-        required: ["content"]
-      }
-    },
-    {
       name: "memory_list",
       description: "List memories from the user's memory library.",
       inputSchema: {
@@ -374,6 +355,7 @@ async function callTool(
 
   if (params.name === "memory_create") {
     if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
+    if (isV2Enabled(env)) return toolError("memory_create is deprecated in v2; use memory_upsert with fact_key");
     const content = readString(args.content);
     if (!content) return toolError("content is required");
     let memory;

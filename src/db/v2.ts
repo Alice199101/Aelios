@@ -252,6 +252,51 @@ export async function listGlossary(
   return result.results ?? [];
 }
 
+export async function updateGlossary(
+  db: D1Database,
+  input: { namespace: string; id: string; term?: string; aliases?: string[]; definition?: string; examples?: string[]; status?: string }
+): Promise<GlossaryRow | null> {
+  const existing = await db
+    .prepare("SELECT * FROM glossary WHERE namespace = ? AND id = ?")
+    .bind(input.namespace, input.id)
+    .first<GlossaryRow>();
+  if (!existing) return null;
+
+  const term = input.term ?? existing.term;
+  const aliases = input.aliases === undefined ? existing.aliases : JSON.stringify(input.aliases);
+  const definition = input.definition ?? existing.definition;
+  const examples = input.examples === undefined ? existing.examples : JSON.stringify(input.examples);
+  const status = input.status ?? existing.status;
+  const updatedAt = nowIso();
+
+  await db
+    .prepare(
+      `UPDATE glossary
+       SET term = ?, aliases = ?, definition = ?, examples = ?, status = ?, updated_at = ?
+       WHERE namespace = ? AND id = ?`
+    )
+    .bind(term, aliases, definition, examples, status, updatedAt, input.namespace, input.id)
+    .run();
+
+  return {
+    ...existing,
+    term,
+    aliases,
+    definition,
+    examples,
+    status,
+    updated_at: updatedAt
+  };
+}
+
+export async function deleteGlossary(
+  db: D1Database,
+  input: { namespace: string; id: string }
+): Promise<boolean> {
+  const row = await updateGlossary(db, { namespace: input.namespace, id: input.id, status: "deleted" });
+  return Boolean(row);
+}
+
 // 词面命中查询：term 或 任一 alias 作为子串出现在 query 里即命中。
 // 母帖第二节："消息里一出现 term / alias 就静默注入 definition"——
 // 不是要求整条 query 等于 term，而是 term 出现在 query 文本里。
@@ -319,6 +364,195 @@ export async function createLongtail(
     .bind(record.id, record.namespace, record.content, record.ts, record.source_message_ids)
     .run();
   return record;
+}
+
+export async function listLongtail(
+  db: D1Database,
+  input: { namespace: string; limit: number }
+): Promise<LongtailRow[]> {
+  const limit = Math.min(Math.max(Math.floor(input.limit), 1), 200);
+  const result = await db
+    .prepare(
+      `SELECT id, namespace, content, ts, source_message_ids
+       FROM longtail
+       WHERE namespace = ?
+       ORDER BY ts DESC
+       LIMIT ?`
+    )
+    .bind(input.namespace, limit)
+    .all<LongtailRow>();
+  return result.results ?? [];
+}
+
+export interface MemoryTypeCount {
+  type: string;
+  count: number;
+}
+
+export async function countActiveMemoriesByType(
+  db: D1Database,
+  namespace: string
+): Promise<MemoryTypeCount[]> {
+  const result = await db
+    .prepare(
+      `SELECT type, COUNT(*) AS count
+       FROM memories
+       WHERE namespace = ? AND status = 'active'
+       GROUP BY type
+       ORDER BY type`
+    )
+    .bind(namespace)
+    .all<MemoryTypeCount>();
+  return result.results ?? [];
+}
+
+export interface MemoryCandidateRow {
+  id: string;
+  namespace: string;
+  type: string;
+  content: string;
+  fact_key: string | null;
+  confidence: number;
+  importance: number;
+  tags: string | null;
+  source_message_ids: string | null;
+  source: string;
+  status: string;
+  target_memory_id: string | null;
+  decision_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateMemoryCandidateInput {
+  namespace: string;
+  type: string;
+  content: string;
+  factKey?: string | null;
+  confidence?: number;
+  importance?: number;
+  tags?: string[];
+  sourceMessageIds?: string[];
+  source?: string;
+}
+
+export async function createMemoryCandidate(
+  db: D1Database,
+  input: CreateMemoryCandidateInput
+): Promise<MemoryCandidateRow> {
+  const id = newId("cand");
+  const now = nowIso();
+  const record: MemoryCandidateRow = {
+    id,
+    namespace: input.namespace,
+    type: input.type || "note",
+    content: input.content,
+    fact_key: input.factKey ?? null,
+    confidence: input.confidence ?? 0.5,
+    importance: input.importance ?? 0.5,
+    tags: JSON.stringify(input.tags ?? []),
+    source_message_ids: JSON.stringify(input.sourceMessageIds ?? []),
+    source: input.source ?? "extract",
+    status: "pending",
+    target_memory_id: null,
+    decision_note: null,
+    created_at: now,
+    updated_at: now
+  };
+
+  await db
+    .prepare(
+      `INSERT INTO memory_candidates (
+        id, namespace, type, content, fact_key, confidence, importance, tags,
+        source_message_ids, source, status, target_memory_id, decision_note,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(
+      record.id,
+      record.namespace,
+      record.type,
+      record.content,
+      record.fact_key,
+      record.confidence,
+      record.importance,
+      record.tags,
+      record.source_message_ids,
+      record.source,
+      record.status,
+      record.target_memory_id,
+      record.decision_note,
+      record.created_at,
+      record.updated_at
+    )
+    .run();
+
+  return record;
+}
+
+export async function listMemoryCandidates(
+  db: D1Database,
+  input: { namespace: string; status?: string; limit: number }
+): Promise<MemoryCandidateRow[]> {
+  const limit = Math.min(Math.max(Math.floor(input.limit), 1), 200);
+  const status = input.status ?? "pending";
+  const result = await db
+    .prepare(
+      `SELECT *
+       FROM memory_candidates
+       WHERE namespace = ? AND status = ?
+       ORDER BY confidence ASC, created_at DESC
+       LIMIT ?`
+    )
+    .bind(input.namespace, status, limit)
+    .all<MemoryCandidateRow>();
+  return result.results ?? [];
+}
+
+export async function countMemoryCandidates(
+  db: D1Database,
+  input: { namespace: string; status?: string }
+): Promise<number> {
+  const status = input.status ?? "pending";
+  const row = await db
+    .prepare("SELECT COUNT(*) AS count FROM memory_candidates WHERE namespace = ? AND status = ?")
+    .bind(input.namespace, status)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
+export async function getMemoryCandidateById(
+  db: D1Database,
+  input: { namespace: string; id: string }
+): Promise<MemoryCandidateRow | null> {
+  const row = await db
+    .prepare("SELECT * FROM memory_candidates WHERE namespace = ? AND id = ?")
+    .bind(input.namespace, input.id)
+    .first<MemoryCandidateRow>();
+  return row ?? null;
+}
+
+export async function updateMemoryCandidateStatus(
+  db: D1Database,
+  input: { namespace: string; id: string; status: string; targetMemoryId?: string | null; decisionNote?: string | null }
+): Promise<MemoryCandidateRow | null> {
+  const now = nowIso();
+  await db
+    .prepare(
+      `UPDATE memory_candidates
+       SET status = ?, target_memory_id = ?, decision_note = ?, updated_at = ?
+       WHERE namespace = ? AND id = ?`
+    )
+    .bind(
+      input.status,
+      input.targetMemoryId ?? null,
+      input.decisionNote ?? null,
+      now,
+      input.namespace,
+      input.id
+    )
+    .run();
+  return getMemoryCandidateById(db, input);
 }
 
 // =====================================================================
@@ -464,6 +698,53 @@ export async function upsertMemoryByFactKey(
   return { id, created: true };
 }
 
+export interface ActiveFactKeyMemory {
+  id: string;
+  namespace: string;
+  type: string;
+  content: string;
+  fact_key: string | null;
+}
+
+export async function getActiveMemoryByFactKey(
+  db: D1Database,
+  input: { namespace: string; factKey: string }
+): Promise<ActiveFactKeyMemory | null> {
+  const row = await db
+    .prepare(
+      `SELECT m.id, m.namespace, m.type, m.content, lc.fact_key
+       FROM memories m
+       JOIN memory_lifecycle lc ON lc.memory_id = m.id
+       WHERE m.namespace = ? AND m.status = 'active' AND lc.fact_key = ?
+       ORDER BY m.updated_at DESC
+       LIMIT 1`
+    )
+    .bind(input.namespace, input.factKey)
+    .first<ActiveFactKeyMemory>();
+  return row ?? null;
+}
+
+export async function markMemorySeen(
+  db: D1Database,
+  input: { namespace: string; id: string }
+): Promise<void> {
+  const seenAt = nowIso();
+  const ensureLifecycle = db
+    .prepare(
+      `INSERT OR IGNORE INTO memory_lifecycle (memory_id, namespace, seen_count, last_seen_at)
+       VALUES (?, ?, 0, ?)`
+    )
+    .bind(input.id, input.namespace, seenAt);
+  const markSeen = db
+    .prepare(
+      `UPDATE memory_lifecycle
+       SET last_seen_at = ?, seen_count = seen_count + 1
+       WHERE memory_id = ? AND namespace = ?`
+    )
+    .bind(seenAt, input.id, input.namespace);
+  await db.batch([ensureLifecycle, markSeen]);
+}
+
 // 同步一条 memory 到 Vectorize。读 D1 全字段后 upsert embedding。
 // 失败不抛错——D1 是本体，向量是镜像；向量失败不该阻断 D1 写入。
 async function syncMemoryVector(
@@ -483,7 +764,20 @@ async function syncMemoryVector(
 // 同时同步 Vectorize：新条目 upsert，旧条目下架 (向量库只索引 active)。
 export async function supersedeMemory(
   env: Env,
-  input: { namespace: string; oldId: string; newContent: string; newType?: string; newFactKey?: string | null; validAsOf?: string | null; reason?: string | null }
+  input: {
+    namespace: string;
+    oldId: string;
+    newContent: string;
+    newType?: string;
+    newFactKey?: string | null;
+    validAsOf?: string | null;
+    reason?: string | null;
+    importance?: number;
+    confidence?: number;
+    tags?: string[];
+    source?: string | null;
+    sourceMessageIds?: string[];
+  }
 ): Promise<{ oldStatus: string; newId: string }> {
   const db = env.DB;
   const now = nowIso();
@@ -516,9 +810,22 @@ export async function supersedeMemory(
       `INSERT INTO memories (
         id, namespace, type, content, importance, confidence, status, pinned,
         tags, source, source_message_ids, vector_id, created_at, updated_at, expires_at
-      ) VALUES (?, ?, ?, ?, 0.6, 0.8, 'active', 0, '[]', 'supersede', '[]', ?, ?, ?, null)`
+      ) VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?, null)`
     )
-    .bind(nextId, input.namespace, input.newType ?? "world_fact", input.newContent, nextVectorId, now, now)
+    .bind(
+      nextId,
+      input.namespace,
+      input.newType ?? "world_fact",
+      input.newContent,
+      input.importance ?? 0.6,
+      input.confidence ?? 0.8,
+      JSON.stringify(input.tags ?? []),
+      input.source ?? "supersede",
+      JSON.stringify(input.sourceMessageIds ?? []),
+      nextVectorId,
+      now,
+      now
+    )
     .run();
   // 新条目侧车行记 supersedes_id + fact_key + valid_as_of
   await db
