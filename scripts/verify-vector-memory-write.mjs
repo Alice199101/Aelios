@@ -19,6 +19,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const source = readFileSync(resolve(root, "src/memory/vectorStore.ts"), "utf8");
 const searchSource = readFileSync(resolve(root, "src/memory/search.ts"), "utf8");
 const digestSource = readFileSync(resolve(root, "src/memory/dailyDigest.ts"), "utf8");
+const recallSource = readFileSync(resolve(root, "src/memory/v2/recall.ts"), "utf8");
+const mcpSource = readFileSync(resolve(root, "src/api/mcp.ts"), "utf8");
 
 function indexOfOrThrow(haystack, needle) {
   const index = haystack.indexOf(needle);
@@ -79,5 +81,16 @@ assert.match(searchSource, /\)\.slice\(0, input\.topK\);/);
 assert.match(digestSource, /const summary = \[`【\$\{input\.dateLabel\} 重要原文】`, reason \? `保存原因：\$\{reason\}` : ""\]/);
 assert.match(digestSource, /content: quote,\s+summary,/s);
 assert.match(digestSource, /if \(v2Enabled && strategy !== "legacy"\) \{\s+const page = await listMemoriesPage\(env\.DB,/s);
+
+assert.match(recallSource, /function readRecallMinScore\(env: Env, override\?: number\): number/);
+assert.match(recallSource, /RECALL_MIN_SCORE \?\? 0\.3/);
+assert.match(recallSource, /min_score\?: number;/);
+assert.match(recallSource, /floored_ids: string\[\];\s+floored_count: number;\s+min_score: number;/);
+assert.match(recallSource, /const minScore = readRecallMinScore\(env, input\.min_score\);/);
+assert.match(recallSource, /const beforeFloor = \[\.\.\.afterDedup, \.\.\.longtailHits\]/);
+assert.match(recallSource, /if \(hit\.score >= minScore\) return true;\s+flooredIds\.push\(hit\.id\);/s);
+assert.match(recallSource, /floored_ids: flooredIds,\s+floored_count: flooredIds\.length,\s+min_score: minScore,/s);
+assert.match(mcpSource, /min_score: \{ type: "number", minimum: 0, maximum: 1 \}/);
+assert.match(mcpSource, /min_score: typeof args\.min_score === "number" \? readNumber\(args\.min_score, 0\.3\) : undefined/);
 
 console.log("verify-vector-memory-write: all checks passed");

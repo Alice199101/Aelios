@@ -41,6 +41,11 @@ function injectDecayFactor(env: Env): number {
   return Number.isFinite(f) && f > 0 && f < 1 ? f : 0.5;
 }
 
+function readRecallMinScore(env: Env, override?: number): number {
+  const raw = override ?? Number(env.RECALL_MIN_SCORE ?? 0.3);
+  return Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 0.3;
+}
+
 function decayForLastInjected(
   lastInjectedAt: string | null,
   windowMs: number,
@@ -231,6 +236,7 @@ export interface RecallInput {
   query: string;
   k?: number;
   types?: string[];
+  min_score?: number;
   // 闸二: 调用方传 boot 包的核心层指纹, recall 命中与之去重。
   // 不传则跳过闸二 (向后兼容第 2 步行为)。
   core_fingerprint?: CoreFingerprint;
@@ -252,6 +258,9 @@ export interface RecallResult {
   meta: {
     decayed_ids: string[];
     deduped_ids: string[];
+    floored_ids: string[];
+    floored_count: number;
+    min_score: number;
     total: number;
   };
 }
@@ -259,8 +268,14 @@ export interface RecallResult {
 export async function runRecall(env: Env, input: RecallInput): Promise<RecallResult> {
   const query = input.query.trim();
   if (!query) {
-    return { hits: [], glossary_hits: [], meta: { decayed_ids: [], deduped_ids: [], total: 0 } };
+    const minScore = readRecallMinScore(env, input.min_score);
+    return {
+      hits: [],
+      glossary_hits: [],
+      meta: { decayed_ids: [], deduped_ids: [], floored_ids: [], floored_count: 0, min_score: minScore, total: 0 }
+    };
   }
+  const minScore = readRecallMinScore(env, input.min_score);
 
   // 1. 黑话词面命中 (L5，不进向量，走词面)
   const glossaryRows = await matchGlossary(env.DB, {
@@ -328,8 +343,15 @@ export async function runRecall(env: Env, input: RecallInput): Promise<RecallRes
     longtailHits = await recallLongtailFallback(env, input);
   }
 
-  const allHits = [...afterDedup, ...longtailHits]
-    .sort((a, b) => b.score - a.score)
+  const beforeFloor = [...afterDedup, ...longtailHits]
+    .sort((a, b) => b.score - a.score);
+  const flooredIds: string[] = [];
+  const allHits = beforeFloor
+    .filter((hit) => {
+      if (hit.score >= minScore) return true;
+      flooredIds.push(hit.id);
+      return false;
+    })
     .slice(0, k);
 
   // 6. 记 last_injected_at (闸三记账)。
@@ -350,6 +372,9 @@ export async function runRecall(env: Env, input: RecallInput): Promise<RecallRes
     meta: {
       decayed_ids: decayedIds,
       deduped_ids: dedupedIds,
+      floored_ids: flooredIds,
+      floored_count: flooredIds.length,
+      min_score: minScore,
       total: allHits.length
     }
   };

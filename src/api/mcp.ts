@@ -236,6 +236,7 @@ function getTools(): Array<Record<string, unknown>> {
         properties: {
           query: { type: "string" },
           k: { type: "number", minimum: 1, maximum: 100 },
+          min_score: { type: "number", minimum: 0, maximum: 1 },
           types: { type: "array", items: { type: "string" } },
           namespace: { type: "string" }
         },
@@ -565,6 +566,7 @@ async function callTool(
       namespace: resolveNamespace(profile, args.namespace),
       query,
       k: readNumber(args.k, 20),
+      min_score: typeof args.min_score === "number" ? readNumber(args.min_score, 0.3) : undefined,
       types: readStringArray(args.types)
     });
     return textToolResult({ data: result });
