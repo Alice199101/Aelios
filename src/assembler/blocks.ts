@@ -207,6 +207,9 @@ function extractSystemTexts(messages: OpenAIChatMessage[]): string[] {
 function isVolatileTimeLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
+  if (/^[【\[](?:当前|现在|系统|本地)?(?:时间|日期|日期时间|时间戳)[】\]]$/.test(trimmed)) return true;
+  if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}(\s+\d{1,2}:\d{2}(:\d{2})?)?$/.test(trimmed)) return true;
+  if (/^星期\s*[:：]/.test(trimmed)) return true;
   const normalized = trimmed.replace(/^[>*\-\d.)\s]+/, "").trim();
   const lower = normalized.toLowerCase();
 
@@ -227,6 +230,8 @@ function isVolatileTimeLine(line: string): boolean {
   return hasTimeLabel && (hasDateLikeValue || /\btimezone\b/i.test(normalized) || /时区/.test(normalized));
 }
 
+const VOLATILE_SECTION_HEADER = /^[【\[](?:当前时间|相关记忆|动态上下文|当前位置|系统状态)[】\]]$/;
+
 function splitClientSystemTexts(texts: string[]): { stable: string[]; volatile: string[] } {
   const stable: string[] = [];
   const volatile: string[] = [];
@@ -234,9 +239,26 @@ function splitClientSystemTexts(texts: string[]): { stable: string[]; volatile: 
   for (const text of texts) {
     const stableLines: string[] = [];
     const volatileLines: string[] = [];
+    let inVolatileSection = false;
 
     for (const line of text.split(/\r?\n/)) {
-      if (isVolatileTimeLine(line)) volatileLines.push(line.trim());
+      const trimmed = line.trim();
+      if (VOLATILE_SECTION_HEADER.test(trimmed)) {
+        inVolatileSection = true;
+        volatileLines.push(trimmed);
+        continue;
+      }
+
+      if (inVolatileSection) {
+        if (!trimmed) {
+          inVolatileSection = false;
+          continue;
+        }
+        volatileLines.push(trimmed);
+        continue;
+      }
+
+      if (isVolatileTimeLine(line)) volatileLines.push(trimmed);
       else stableLines.push(line);
     }
 

@@ -45,6 +45,7 @@ interface AnthropicRequest {
   messages: AnthropicMessage[];
   tools?: AnthropicTool[];
   tool_choice?: AnthropicToolChoice;
+  metadata?: { user_id: string };
 }
 
 interface AnthropicResponse {
@@ -152,24 +153,33 @@ function getRollingCacheWindowSize(env: Env): number {
   return Math.max(Math.floor(value), 1);
 }
 
-function applyRollingMessageCache(messages: AnthropicWireMessage[], env: Env): void {
+function applyRollingMessageCache(messages: AnthropicWireMessage[], env: Env, systemBlocks?: AnthropicTextBlock[]): void {
   const cacheControl = buildCacheControl(env);
   if (!cacheControl) return;
   if (env.ANTHROPIC_ROLLING_CACHE_ENABLED !== "true") return; // default off now
 
-  const isFullWindow = messages.length >= getRollingCacheWindowSize(env);
-  const start = isFullWindow ? 0 : messages.length - 1;
-  const end = isFullWindow ? messages.length : -1;
-  const step = isFullWindow ? 1 : -1;
+  const systemCacheCount = systemBlocks?.filter((block) => block.cache_control).length ?? 0;
+  const maxMessageMarkers = Math.max(1, 4 - systemCacheCount);
+  const userIndices: number[] = [];
 
-  for (let i = start; i !== end; i += step) {
-    const message = messages[i];
-    if (message.role !== "user" || message.content.length === 0) continue;
-    const lastBlock = message.content[message.content.length - 1];
-    if (lastBlock.type === "text") {
-      lastBlock.cache_control = cacheControl;
+  const isFullWindow = messages.length >= getRollingCacheWindowSize(env);
+  const start = isFullWindow ? 0 : Math.max(0, messages.length - 1);
+  for (let i = start; i < messages.length; i += 1) {
+    if (messages[i].role === "user" && messages[i].content.length > 0) {
+      userIndices.push(i);
     }
-    return;
+  }
+  if (userIndices.length === 0) return;
+
+  const last = userIndices[userIndices.length - 1];
+  const lastBlock = messages[last].content[messages[last].content.length - 1];
+  if (lastBlock.type === "text") lastBlock.cache_control = cacheControl;
+
+  const remaining = Math.min(userIndices.length - 1, maxMessageMarkers - 1);
+  for (let marker = 0; marker < remaining; marker += 1) {
+    const idx = userIndices[Math.floor(marker * (userIndices.length - 1) / remaining)];
+    const block = messages[idx].content[messages[idx].content.length - 1];
+    if (block.type === "text") block.cache_control = cacheControl;
   }
 }
 
@@ -509,7 +519,7 @@ export async function buildAnthropicNativeRequest(
   const messages = convertMessages(req.messages);
   // Legacy path: rolling cache disabled by default
   if (input.env.ANTHROPIC_ROLLING_CACHE_ENABLED === "true") {
-    applyRollingMessageCache(messages, input.env);
+    applyRollingMessageCache(messages, input.env, system);
   }
   appendUncachedUserContext(messages, dynamicMemoryPatch);
 
@@ -527,6 +537,7 @@ export async function buildAnthropicNativeRequest(
     messages,
     ...(tools ? { tools } : {}),
     ...(toolChoice ? { tool_choice: toolChoice } : {}),
+    ...(input.env.ANTHROPIC_CACHE_USER_ID ? { metadata: { user_id: input.env.ANTHROPIC_CACHE_USER_ID } } : {}),
   };
 }
 
@@ -626,6 +637,7 @@ export function buildAnthropicRequestFromAssembled(
     messages,
     ...(cachedTools ? { tools: cachedTools } : {}),
     ...(toolChoice ? { tool_choice: toolChoice } : {}),
+    ...(env.ANTHROPIC_CACHE_USER_ID ? { metadata: { user_id: env.ANTHROPIC_CACHE_USER_ID } } : {}),
   };
 }
 

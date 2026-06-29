@@ -68,6 +68,17 @@ function getMinScore(env: Env): number {
   return Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : 0.1;
 }
 
+function getLegacyFallbackLimit(env: Env, topK: number): number {
+  const value = Number(env.MEMORY_LEGACY_VECTOR_FALLBACK_LIMIT || 3);
+  const limit = Number.isFinite(value) ? Math.max(Math.floor(value), 0) : 3;
+  return Math.min(limit, topK);
+}
+
+function getLegacyFallbackScoreFactor(env: Env): number {
+  const value = Number(env.MEMORY_LEGACY_VECTOR_FALLBACK_SCORE_FACTOR || 0.45);
+  return Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : 0.45;
+}
+
 function getRefId(match: VectorizeMatch): string | null {
   const metadata = (match.metadata || {}) as MetadataMap;
   const refId = metadata.ref_id;
@@ -200,10 +211,13 @@ async function searchWithVectorize(
   const vector = await createEmbedding(env, input.query);
   if (!vector) return null;
 
-  let result = await queryVectorize(env, vector, input, true);
+  const legacyFallbackLimit = getLegacyFallbackLimit(env, input.topK);
+  const vectorTopK = Math.min(Math.max(input.topK * 3, input.topK + legacyFallbackLimit), 100);
+  const vectorInput = { ...input, topK: vectorTopK };
+  let result = await queryVectorize(env, vector, vectorInput, true);
   let usedUnfilteredFallback = false;
   if (result.matches.length === 0) {
-    result = await queryVectorize(env, vector, input, false);
+    result = await queryVectorize(env, vector, vectorInput, false);
     usedUnfilteredFallback = true;
   }
 
@@ -243,11 +257,22 @@ async function searchWithVectorize(
   // Use allRecords (not just active) so inactive D1 records block legacy fallback
   const foundD1Ids = new Set(allRecords.map((record) => record.id));
   const d1Records = activeRecords.map((record) => ({ ...record, score: scoredIds.get(record.id) ?? 0 }));
-  const legacyOnlyRecords = legacyRecords.filter((record) => !foundD1Ids.has(record.id));
+  const legacySlots = Math.max(0, Math.min(input.topK - d1Records.length, legacyFallbackLimit));
+  const legacyOnlyRecords = legacySlots > 0
+    ? legacyRecords
+      .filter((record) => !foundD1Ids.has(record.id))
+      .sort((a, b) => b.score + b.importance * 0.05 - (a.score + a.importance * 0.05))
+      .slice(0, legacySlots)
+      .map((record) => ({
+        ...record,
+        score: record.score * getLegacyFallbackScoreFactor(env),
+        source: record.source === "vectorize" ? "legacy_vectorize" : record.source || "legacy_vectorize"
+      }))
+    : [];
 
   return [...d1Records, ...legacyOnlyRecords].sort(
     (a, b) => b.score + b.importance * 0.05 - (a.score + a.importance * 0.05)
-  );
+  ).slice(0, input.topK);
 }
 
 export async function searchMemories(

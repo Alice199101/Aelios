@@ -17,6 +17,8 @@ import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const source = readFileSync(resolve(root, "src/memory/vectorStore.ts"), "utf8");
+const searchSource = readFileSync(resolve(root, "src/memory/search.ts"), "utf8");
+const digestSource = readFileSync(resolve(root, "src/memory/dailyDigest.ts"), "utf8");
 
 function indexOfOrThrow(haystack, needle) {
   const index = haystack.indexOf(needle);
@@ -59,5 +61,23 @@ const updateVectorUpsert = indexOfOrThrow(updateBody, "await requireVectorize(en
 assert.ok(d1Update < updateVectorUpsert, "updateVectorMemory must update D1 before Vectorize upsert");
 assert.match(updateBody, /console\.error\("memory vector upsert failed after D1 update", \{ id: next\.id, error \}\);/);
 assert.match(updateBody, /return memoryRecordToApiRecord\(updatedRecord\);/);
+
+assert.match(source, /type\?: string;\s+status\?: string;/);
+assert.match(source, /options\?: \{ includeInactive\?: boolean \}/);
+assert.match(source, /const hasFilter = Boolean\(input\.type \|\| input\.status\);/);
+assert.match(source, /ids: data\.map\(\(record\) => record\.id\)/);
+assert.match(source, /if \(input\.type && record\.type !== input\.type\) continue;/);
+assert.match(source, /if \(input\.status && record\.status !== input\.status\) continue;/);
+
+assert.match(searchSource, /function getLegacyFallbackLimit\(env: Env, topK: number\): number/);
+assert.match(searchSource, /function getLegacyFallbackScoreFactor\(env: Env\): number/);
+assert.match(searchSource, /const vectorTopK = Math\.min\(Math\.max\(input\.topK \* 3, input\.topK \+ legacyFallbackLimit\), 100\);/);
+assert.match(searchSource, /const legacySlots = Math\.max\(0, Math\.min\(input\.topK - d1Records\.length, legacyFallbackLimit\)\);/);
+assert.match(searchSource, /score: record\.score \* getLegacyFallbackScoreFactor\(env\)/);
+assert.match(searchSource, /\)\.slice\(0, input\.topK\);/);
+
+assert.match(digestSource, /const summary = \[`【\$\{input\.dateLabel\} 重要原文】`, reason \? `保存原因：\$\{reason\}` : ""\]/);
+assert.match(digestSource, /content: quote,\s+summary,/s);
+assert.match(digestSource, /if \(v2Enabled && strategy !== "legacy"\) \{\s+const page = await listMemoriesPage\(env\.DB,/s);
 
 console.log("verify-vector-memory-write: all checks passed");

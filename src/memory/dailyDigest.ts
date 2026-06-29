@@ -1,4 +1,5 @@
 import { listMessagesByNamespaceInRange } from "../db/messages";
+import { listMemoriesPage } from "../db/memories";
 import { readCursor, writeCursor } from "../db/retention";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, MessageRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
@@ -11,6 +12,7 @@ import {
   updateVectorMemory
 } from "./vectorStore";
 import { isV2Enabled } from "./v2/recall";
+import { toMemoryApiRecord } from "./search";
 import {
   upsertMemoryByFactKey,
   supersedeMemory,
@@ -642,14 +644,15 @@ async function saveImportantExcerpts(
     const quote = readString(excerpt.quote);
     if (!quote) continue;
     const reason = readString(excerpt.reason);
-    const content = [`【${input.dateLabel} 重要原文】`, quote, reason ? `保存原因：${reason}` : ""]
+    const summary = [`【${input.dateLabel} 重要原文】`, reason ? `保存原因：${reason}` : ""]
       .filter(Boolean)
-      .join("\n");
+      .join("｜");
 
     await createVectorMemory(env, {
       namespace: input.namespace,
       type: "excerpt",
-      content,
+      content: quote,
+      summary,
       importance: 0.72,
       confidence: 0.9,
       tags: uniqueStrings(["important-excerpt", input.dateLabel, ...(excerpt.tags ?? [])]),
@@ -885,17 +888,27 @@ export async function runDailyMemoryDigest(
   const lastMessage = messages[messages.length - 1];
   const hasMore = messages.length >= maxMessages;
   const memoryContextLimit = readDreamMemoryContextLimit(env);
-  let existingMemories: MemoryApiRecord[] = [];
-  try {
-    existingMemories = (await listVectorMemories(env, {
-      namespace,
-      count: memoryContextLimit
-    })).data;
-  } catch (error) {
-    console.error("dream: failed to list existing vector memories", error);
-  }
   const strategy = readDreamStrategy(env);
   const v2Enabled = isV2Enabled(env);
+  let existingMemories: MemoryApiRecord[] = [];
+  try {
+    if (v2Enabled && strategy !== "legacy") {
+      const page = await listMemoriesPage(env.DB, {
+        namespace,
+        status: "active",
+        limit: memoryContextLimit,
+        offset: 0
+      });
+      existingMemories = page.records.map((record) => toMemoryApiRecord(record));
+    } else {
+      existingMemories = (await listVectorMemories(env, {
+        namespace,
+        count: memoryContextLimit
+      })).data;
+    }
+  } catch (error) {
+    console.error("dream: failed to list existing memories", error);
+  }
   const cleanedEmptyMemories = v2Enabled && strategy === "review" ? 0 : await cleanEmptyMemories(env, namespace);
 
   const prompt = buildDigestPrompt({

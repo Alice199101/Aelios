@@ -44,6 +44,8 @@ export interface VectorMemoryListInput {
   namespace?: string;
   cursor?: string;
   count: number;
+  type?: string;
+  status?: string;
 }
 
 export interface VectorMemoryListPage {
@@ -104,11 +106,12 @@ function toMetadata(input: Required<VectorMemoryInput> & { id: string; vectorId:
 
 export function vectorMetadataToMemoryRecord(
   vector: Pick<VectorizeVector, "id" | "metadata">,
-  score?: number
+  score?: number,
+  options?: { includeInactive?: boolean }
 ): MemoryApiRecord | null {
   const metadata = (vector.metadata || {}) as MetadataMap;
   const status = readString(metadata.status) || "active";
-  if (status !== "active") return null;
+  if (!options?.includeInactive && status !== "active") return null;
 
   const content = readString(metadata.content) || readString(metadata.text) || readString(metadata.memory);
   if (!content) return null;
@@ -644,23 +647,67 @@ export async function listVectorMemories(
   env: Env,
   input: VectorMemoryListInput
 ): Promise<VectorMemoryListPage> {
-  const listed = await listVectorIdsViaApi(env, input);
-  const vectors = listed.ids.length > 0 ? await getVectorsByIdsBatched(requireVectorize(env), listed.ids) : [];
-  const data = vectors
-    .flatMap((vector): MemoryApiRecord[] => {
-      const record = vectorMetadataToMemoryRecord(vector);
-      if (!record) return [];
-      if (input.namespace && record.namespace !== input.namespace) return [];
-      return [record];
-    })
-    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.importance - a.importance || b.updated_at.localeCompare(a.updated_at));
+  const hasFilter = Boolean(input.type || input.status);
+  const sortRecords = (records: MemoryApiRecord[]) =>
+    records.sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.importance - a.importance || b.updated_at.localeCompare(a.updated_at));
 
+  if (!hasFilter) {
+    const listed = await listVectorIdsViaApi(env, input);
+    const vectors = listed.ids.length > 0 ? await getVectorsByIdsBatched(requireVectorize(env), listed.ids) : [];
+    const data = sortRecords(
+      vectors.flatMap((vector): MemoryApiRecord[] => {
+        const record = vectorMetadataToMemoryRecord(vector);
+        if (!record) return [];
+        if (input.namespace && record.namespace !== input.namespace) return [];
+        return [record];
+      })
+    );
+
+    return {
+      data,
+      ids: data.map((record) => record.id),
+      cursor: listed.cursor,
+      hasMore: listed.hasMore,
+      count: data.length,
+      totalCount: listed.totalCount
+    };
+  }
+
+  const filtered: MemoryApiRecord[] = [];
+  const includeInactive = Boolean(input.status && input.status !== "active");
+  const vectorize = requireVectorize(env);
+  let cursor: string | null | undefined = input.cursor;
+  let hasMore = true;
+  let lastCursor: string | null = null;
+  let scannedPages = 0;
+  const maxScanPages = 5;
+
+  while (filtered.length < input.count && hasMore && scannedPages < maxScanPages) {
+    const listed = await listVectorIdsViaApi(env, { ...input, cursor: cursor ?? undefined });
+    const vectors = listed.ids.length > 0 ? await getVectorsByIdsBatched(vectorize, listed.ids) : [];
+
+    for (const vector of vectors) {
+      const record = vectorMetadataToMemoryRecord(vector, undefined, { includeInactive });
+      if (!record) continue;
+      if (input.namespace && record.namespace !== input.namespace) continue;
+      if (input.type && record.type !== input.type) continue;
+      if (input.status && record.status !== input.status) continue;
+      filtered.push(record);
+      if (filtered.length >= input.count) break;
+    }
+
+    cursor = listed.cursor;
+    lastCursor = listed.cursor;
+    hasMore = listed.hasMore;
+    scannedPages += 1;
+  }
+
+  const data = sortRecords(filtered);
   return {
     data,
-    ids: listed.ids,
-    cursor: listed.cursor,
-    hasMore: listed.hasMore,
-    count: listed.ids.length,
-    totalCount: listed.totalCount
+    ids: data.map((record) => record.id),
+    cursor: lastCursor,
+    hasMore,
+    count: data.length
   };
 }
