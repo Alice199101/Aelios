@@ -16,6 +16,7 @@ import {
 } from "./api/memories";
 import { handleMcp } from "./api/mcp";
 import { handleModels } from "./api/models";
+import { runCandidateJudge } from "./memory/candidateJudge";
 import { runDailyMemoryDigest } from "./memory/dailyDigest";
 import { runMemoryExtractionBatches } from "./memory/extractPipeline";
 import { runMemoryRetention } from "./memory/retention";
@@ -162,7 +163,18 @@ export default {
     const tasks: Array<Promise<unknown>> = [];
 
     if (shouldRunExtract) {
-      tasks.push(runMemoryExtractionBatches(env, namespace, { scheduledTime: controller.scheduledTime }));
+      // 候选队列自动评审跟在抽取批次后面跑，同一个 namespace，避免跟本轮刚写入的
+      // pending 候选抢跑。CANDIDATE_JUDGE_ENABLED 默认关闭，关闭时这里直接跳过，
+      // 不调用 runCandidateJudge，disabled = 零额外开销。
+      tasks.push(
+        runMemoryExtractionBatches(env, namespace, { scheduledTime: controller.scheduledTime }).then(
+          async (extraction) => {
+            if (env.CANDIDATE_JUDGE_ENABLED !== "true") return { extraction };
+            const judge = await runCandidateJudge(env, namespace);
+            return { extraction, judge };
+          }
+        )
+      );
     }
 
     if (shouldRunDailyMaintenance) {
