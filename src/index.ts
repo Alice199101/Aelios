@@ -1,7 +1,7 @@
 import { handleAdmin } from "./api/admin";
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
-import { handleCacheHealth, handleVectorHealth, handleVectorReindex } from "./api/debug";
+import { handleCacheHealth, handleVectorDoctor, handleVectorHealth, handleVectorReindex } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import {
@@ -138,6 +138,10 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/v1/debug/vector_reindex") {
       return handleVectorReindex(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/vector-doctor") {
+      return handleVectorDoctor(request, env);
     }
 
     return openAiError("Not found", 404);
