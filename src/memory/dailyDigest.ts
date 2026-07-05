@@ -1,6 +1,8 @@
+import { finishDreamRun, hasSuccessfulDreamRun, insertDreamRun } from "../db/dreamRuns";
 import { listMessagesByNamespaceInRange } from "../db/messages";
 import { listMemoriesPage } from "../db/memories";
 import { readCursor, writeCursor } from "../db/retention";
+import type { DreamRunTrigger } from "../db/dreamRuns";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, MessageRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import type { ExtractedMemory } from "./extract";
@@ -94,7 +96,16 @@ interface DailyDigestSkipped {
   finishReason?: string | null;
 }
 
-type DailyDigestRunResult = { ran: true; stats: DailyDigestStats } | DailyDigestSkipped;
+type DailyDigestRunResult =
+  | { ran: true; stats: DailyDigestStats; proposal?: DailyDigestResult }
+  | (DailyDigestSkipped & { proposal?: DailyDigestResult });
+
+export type DailyDigestRunOptions = {
+  dateLabel?: string;
+  force?: boolean;
+  dryRun?: boolean;
+  trigger?: DreamRunTrigger;
+};
 
 interface DigestModelCallResult {
   digest: DailyDigestResult | null;
@@ -203,8 +214,20 @@ function formatDate(date: Date, timeZone: string): string {
   }).format(date);
 }
 
-function getTargetDigestDateLabel(timeZone: string, now = new Date()): string {
+export function getTargetDigestDateLabel(timeZone: string, now = new Date()): string {
   return formatDate(new Date(now.getTime() - ONE_DAY_MS), timeZone);
+}
+
+export function readDreamTimeZoneFromEnv(env: Env): string {
+  return readDreamTimeZone(env);
+}
+
+export function getDateLabelsLookback(dateLabel: string, count: number, timeZone: string): string[] {
+  const labels: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    labels.push(addDaysToDateLabel(dateLabel, -i, timeZone));
+  }
+  return labels;
 }
 
 function parseDateLabel(dateLabel: string): { year: number; month: number; day: number } {
@@ -275,7 +298,7 @@ function addDaysToDateLabel(dateLabel: string, days: number, timeZone: string): 
   return formatDate(new Date(localNoonUtc.getTime() + days * ONE_DAY_MS), timeZone);
 }
 
-function getDateRangeForLabel(dateLabel: string, timeZone: string): { startIso: string; endIso: string } {
+export function getDateRangeForLabel(dateLabel: string, timeZone: string): { startIso: string; endIso: string } {
   const start = parseDateLabel(dateLabel);
   const end = parseDateLabel(addDaysToDateLabel(dateLabel, 1, timeZone));
 
@@ -285,7 +308,7 @@ function getDateRangeForLabel(dateLabel: string, timeZone: string): { startIso: 
   };
 }
 
-function readDailyCursor(value: string | null, startIso: string, endIso: string): { done: boolean; after: string | null } {
+export function readDailyCursor(value: string | null, startIso: string, endIso: string): { done: boolean; after: string | null } {
   if (!value) return { done: false, after: null };
   if (value.startsWith("done:")) return { done: true, after: null };
   if (value >= startIso && value < endIso) return { done: false, after: value };
@@ -514,6 +537,16 @@ function buildDigestPrompt(input: {
   ].join("\n");
 }
 
+const DREAM_MODEL_RETRY_BACKOFF_MS = [2000, 8000];
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetriableModelStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
 async function callDigestModel(
   env: Env,
   prompt: string,
@@ -550,54 +583,81 @@ async function callDigestModel(
     maxTokens: request.max_tokens
   });
 
-  try {
-    const response = await callOpenAICompat(env, request);
-    const elapsedMs = Date.now() - startedAt;
-    if (!response.ok) {
-      console.error("dream: model returned non-ok", {
+  const maxAttempts = 1 + DREAM_MODEL_RETRY_BACKOFF_MS.length;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (attempt > 0) {
+      const backoffMs = DREAM_MODEL_RETRY_BACKOFF_MS[attempt - 1] ?? DREAM_MODEL_RETRY_BACKOFF_MS.at(-1) ?? 8000;
+      console.warn("dream: retrying model call after non-ok response", {
         date: meta.dateLabel,
         model,
-        status: response.status,
-        statusText: response.statusText,
-        elapsedMs
+        attempt: attempt + 1,
+        maxAttempts,
+        backoffMs
       });
-      return { digest: null, reason: "model_error", model, status: response.status };
+      await delay(backoffMs);
     }
-    const parsed = (await response.json()) as OpenAIChatResponse;
-    const choice = parsed.choices?.[0];
-    const message = choice?.message as ({ content?: unknown; reasoning_content?: unknown }) | undefined;
-    const content = typeof message?.content === "string" ? message.content.trim() : "";
-    const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
-    const json = extractJsonObject(content || reasoning);
-    if (!json) {
-      console.error("dream: model returned invalid JSON", {
+
+    try {
+      const response = await callOpenAICompat(env, request);
+      const elapsedMs = Date.now() - startedAt;
+      if (!response.ok) {
+        const retriable = isRetriableModelStatus(response.status);
+        console.error("dream: model returned non-ok", {
+          date: meta.dateLabel,
+          model,
+          status: response.status,
+          statusText: response.statusText,
+          elapsedMs,
+          attempt: attempt + 1,
+          retriable
+        });
+        if (retriable && attempt < maxAttempts - 1) continue;
+        return { digest: null, reason: "model_error", model, status: response.status };
+      }
+      const parsed = (await response.json()) as OpenAIChatResponse;
+      const choice = parsed.choices?.[0];
+      const message = choice?.message as ({ content?: unknown; reasoning_content?: unknown }) | undefined;
+      const content = typeof message?.content === "string" ? message.content.trim() : "";
+      const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
+      const json = extractJsonObject(content || reasoning);
+      if (!json) {
+        console.error("dream: model returned invalid JSON", {
+          date: meta.dateLabel,
+          model,
+          elapsedMs,
+          finishReason: choice?.finish_reason ?? null,
+          contentChars: content.length,
+          reasoningChars: reasoning.length
+        });
+        return { digest: null, reason: "model_invalid_json", model, finishReason: choice?.finish_reason };
+      }
+      console.log("dream: model returned valid JSON", {
         date: meta.dateLabel,
         model,
         elapsedMs,
         finishReason: choice?.finish_reason ?? null,
         contentChars: content.length,
-        reasoningChars: reasoning.length
+        reasoningChars: reasoning.length,
+        attempt: attempt + 1
       });
-      return { digest: null, reason: "model_invalid_json", model, finishReason: choice?.finish_reason };
+      return { digest: normalizeDigestResult(json), model };
+    } catch (error) {
+      const elapsedMs = Date.now() - startedAt;
+      const message = error instanceof Error && error.message ? error.message : String(error);
+      console.error("dream model failed", {
+        date: meta.dateLabel,
+        model,
+        elapsedMs,
+        attempt: attempt + 1,
+        error: message
+      });
+      if (attempt < maxAttempts - 1) continue;
+      return { digest: null, reason: "model_error", model };
     }
-    console.log("dream: model returned valid JSON", {
-      date: meta.dateLabel,
-      model,
-      elapsedMs,
-      finishReason: choice?.finish_reason ?? null,
-      contentChars: content.length,
-      reasoningChars: reasoning.length
-    });
-    return { digest: normalizeDigestResult(json), model };
-  } catch (error) {
-    console.error("dream model failed", {
-      date: meta.dateLabel,
-      model,
-      elapsedMs: Date.now() - startedAt,
-      error: error instanceof Error && error.message ? error.message : String(error)
-    });
-    return { digest: null, reason: "model_error", model };
   }
+
+  return { digest: null, reason: "model_error", model };
 }
 
 async function retireMemoryRecord(
@@ -892,21 +952,139 @@ async function selectDreamMemoryContext(
   return page.records.map((record) => toMemoryApiRecord(record));
 }
 
+async function safeFinishDreamRun(
+  db: D1Database,
+  input: {
+    id: string | null;
+    status: "ok" | "skipped" | "error";
+    reason?: string | null;
+    model?: string | null;
+    processedMessages?: number | null;
+    error?: string | null;
+  }
+): Promise<void> {
+  if (!input.id) return;
+  try {
+    await finishDreamRun(db, {
+      id: input.id,
+      status: input.status,
+      reason: input.reason,
+      model: input.model,
+      processedMessages: input.processedMessages,
+      error: input.error
+    });
+  } catch (error) {
+    console.error("dream: failed to update dream_runs row", {
+      id: input.id,
+      status: input.status,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
+async function safeInsertDreamRun(
+  db: D1Database,
+  input: { namespace: string; dateLabel: string; trigger: DreamRunTrigger }
+): Promise<string | null> {
+  try {
+    return await insertDreamRun(db, input);
+  } catch (error) {
+    console.error("dream: failed to insert dream_runs row", {
+      namespace: input.namespace,
+      dateLabel: input.dateLabel,
+      trigger: input.trigger,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+export async function countRawMessagesForDateLabel(
+  db: D1Database,
+  input: { namespace: string; dateLabel: string; timeZone: string }
+): Promise<number> {
+  const { startIso, endIso } = getDateRangeForLabel(input.dateLabel, input.timeZone);
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM messages
+       WHERE namespace = ?
+         AND role IN ('user', 'assistant')
+         AND created_at >= ?
+         AND created_at < ?`
+    )
+    .bind(input.namespace, startIso, endIso)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
+export async function readDreamCursorValue(
+  db: D1Database,
+  input: { namespace: string; dateLabel: string }
+): Promise<string | null> {
+  const cursorName = `dream:${input.namespace}:${input.dateLabel}`;
+  const legacyCursorName = `daily_digest:${input.namespace}:${input.dateLabel}`;
+  return (await readCursor(db, cursorName)) ?? (await readCursor(db, legacyCursorName));
+}
+
+export async function runDreamBackfill(
+  env: Env,
+  namespace: string,
+  options: { maxDates?: number; lookback?: number } = {}
+): Promise<Array<{ dateLabel: string; result: DailyDigestRunResult }>> {
+  const maxDates = options.maxDates ?? 2;
+  const lookback = options.lookback ?? 3;
+  const timeZone = readDreamTimeZone(env);
+  const anchorDateLabel = getTargetDigestDateLabel(timeZone);
+  const candidateLabels = getDateLabelsLookback(anchorDateLabel, lookback + 1, timeZone).slice(1);
+  const results: Array<{ dateLabel: string; result: DailyDigestRunResult }> = [];
+  let backfilled = 0;
+
+  for (const dateLabel of candidateLabels) {
+    if (backfilled >= maxDates) break;
+
+    const { startIso, endIso } = getDateRangeForLabel(dateLabel, timeZone);
+    const cursor = await readDreamCursorValue(env.DB, { namespace, dateLabel });
+    const cursorState = readDailyCursor(cursor, startIso, endIso);
+    if (cursorState.done) continue;
+
+    const rawCount = await countRawMessagesForDateLabel(env.DB, { namespace, dateLabel, timeZone });
+    if (rawCount === 0) continue;
+
+    const alreadyOk = await hasSuccessfulDreamRun(env.DB, { namespace, dateLabel });
+    if (alreadyOk) continue;
+
+    const result = await runDailyMemoryDigest(env, namespace, { dateLabel, trigger: "cron" });
+    results.push({ dateLabel, result });
+    backfilled += 1;
+  }
+
+  return results;
+}
+
 export async function runDailyMemoryDigest(
   env: Env,
   namespace: string,
-  options: { dateLabel?: string; force?: boolean } = {}
+  options: DailyDigestRunOptions = {}
 ): Promise<DailyDigestRunResult> {
   if (!isDreamEnabled(env)) return { ran: false, mode: "dream", reason: "dream_disabled" };
 
+  const dryRun = options.dryRun === true;
+  const trigger = options.trigger ?? "cron";
   const timeZone = readDreamTimeZone(env);
   const dateLabel = readString(options.dateLabel) || getTargetDigestDateLabel(timeZone);
+  const dreamRunId = await safeInsertDreamRun(env.DB, { namespace, dateLabel, trigger });
   const { startIso, endIso } = getDateRangeForLabel(dateLabel, timeZone);
   const cursorName = `dream:${namespace}:${dateLabel}`;
   const legacyCursorName = `daily_digest:${namespace}:${dateLabel}`;
   const cursor = (await readCursor(env.DB, cursorName)) ?? (await readCursor(env.DB, legacyCursorName));
   const cursorState = options.force ? { done: false, after: null } : readDailyCursor(cursor, startIso, endIso);
   if (cursorState.done) {
+    await safeFinishDreamRun(env.DB, {
+      id: dreamRunId,
+      status: "skipped",
+      reason: "already_done"
+    });
     return { ran: false, mode: "dream", date: dateLabel, reason: "already_done", startIso, endIso, cursor };
   }
 
@@ -919,7 +1097,14 @@ export async function runDailyMemoryDigest(
     limit: maxMessages
   });
   if (fetchedMessages.length === 0) {
-    await writeCursor(env.DB, cursorName, `done:${cursorState.after ?? startIso}`);
+    if (!dryRun) {
+      await writeCursor(env.DB, cursorName, `done:${cursorState.after ?? startIso}`);
+    }
+    await safeFinishDreamRun(env.DB, {
+      id: dreamRunId,
+      status: "skipped",
+      reason: "no_messages"
+    });
     return { ran: false, mode: "dream", date: dateLabel, reason: "no_messages", startIso, endIso, cursor };
   }
 
@@ -943,7 +1128,8 @@ export async function runDailyMemoryDigest(
   } catch (error) {
     console.error("dream: failed to list existing memories", error);
   }
-  const cleanedEmptyMemories = v2Enabled && strategy === "review" ? 0 : await cleanEmptyMemories(env, namespace);
+  const cleanedEmptyMemories =
+    dryRun || (v2Enabled && strategy === "review") ? 0 : await cleanEmptyMemories(env, namespace);
   const excerptLimit = readDreamExcerptLimit(env);
   const fetchedHasMore = fetchedMessages.length >= maxMessages;
 
@@ -988,6 +1174,18 @@ export async function runDailyMemoryDigest(
       model: modelResult.model,
       status: modelResult.status
     });
+    await safeFinishDreamRun(env.DB, {
+      id: dreamRunId,
+      status: "error",
+      reason: modelResult.reason ?? "model_error",
+      model: modelResult.model,
+      processedMessages: messages.length,
+      error: modelResult.finishReason
+        ? `finish_reason=${modelResult.finishReason}`
+        : modelResult.status
+          ? `status=${modelResult.status}`
+          : null
+    });
     return {
       ran: false,
       mode: "dream",
@@ -1002,6 +1200,33 @@ export async function runDailyMemoryDigest(
       finishReason: modelResult.finishReason
     };
   }
+
+  if (dryRun) {
+    await safeFinishDreamRun(env.DB, {
+      id: dreamRunId,
+      status: "ok",
+      reason: "dry_run",
+      model: modelResult.model,
+      processedMessages: messages.length
+    });
+    return {
+      ran: true,
+      stats: {
+        date: dateLabel,
+        mode: "dream",
+        processedMessages: messages.length,
+        addedMemories: 0,
+        updatedMemories: 0,
+        deletedMemories: 0,
+        savedExcerpts: 0,
+        cleanedEmptyMemories,
+        cursorAdvanced: false,
+        hasMore
+      },
+      proposal: digest
+    };
+  }
+
   const lastMessage = messages[messages.length - 1];
   const messageIds = messages.map((message) => message.id);
 
@@ -1017,6 +1242,13 @@ export async function runDailyMemoryDigest(
     });
 
     await writeCursor(env.DB, cursorName, hasMore ? lastMessage.created_at : `done:${lastMessage.created_at}`);
+
+    await safeFinishDreamRun(env.DB, {
+      id: dreamRunId,
+      status: "ok",
+      model: modelResult.model,
+      processedMessages: messages.length
+    });
 
     return {
       ran: true,
@@ -1064,6 +1296,13 @@ export async function runDailyMemoryDigest(
   });
 
   await writeCursor(env.DB, cursorName, hasMore ? lastMessage.created_at : `done:${lastMessage.created_at}`);
+
+  await safeFinishDreamRun(env.DB, {
+    id: dreamRunId,
+    status: "ok",
+    model: modelResult.model,
+    processedMessages: messages.length
+  });
 
   return {
     ran: true,
