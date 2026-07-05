@@ -2,6 +2,7 @@ import { handleAdmin } from "./api/admin";
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
 import { handleCacheHealth, handleVectorDoctor, handleVectorHealth, handleVectorReindex } from "./api/debug";
+import { handleDreamRun, handleDreamStatus } from "./api/dream";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import {
@@ -17,7 +18,7 @@ import {
 import { handleMcp } from "./api/mcp";
 import { handleModels } from "./api/models";
 import { runCandidateJudge } from "./memory/candidateJudge";
-import { runDailyMemoryDigest } from "./memory/dailyDigest";
+import { runDailyMemoryDigest, runDreamBackfill } from "./memory/dailyDigest";
 import { runMemoryExtractionBatches } from "./memory/extractPipeline";
 import { runMemoryRetention } from "./memory/retention";
 import { handleQueueMessage } from "./queue/consumer";
@@ -42,9 +43,14 @@ async function runDailyMemoryDigestBatches(env: Env, namespace: string): Promise
   const maxRuns = getDailyDigestMaxRuns(env);
 
   for (let i = 0; i < maxRuns; i += 1) {
-    const result = await runDailyMemoryDigest(env, namespace);
-    results.push(result);
+    const result = await runDailyMemoryDigest(env, namespace, { trigger: "cron" });
+    results.push({ type: "primary", result });
     if (!result.ran || !result.stats?.hasMore) break;
+  }
+
+  const backfill = await runDreamBackfill(env, namespace, { maxDates: 2, lookback: 3 });
+  for (const item of backfill) {
+    results.push({ type: "backfill", date_label: item.dateLabel, result: item.result });
   }
 
   return results;
@@ -142,6 +148,14 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/v1/vector-doctor") {
       return handleVectorDoctor(request, env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/v1/dream/status") {
+      return handleDreamStatus(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/dream/run") {
+      return handleDreamRun(request, env);
     }
 
     return openAiError("Not found", 404);
