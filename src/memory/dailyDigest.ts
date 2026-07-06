@@ -7,22 +7,18 @@ import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, MessageRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import type { ExtractedMemory } from "./extract";
 import {
-  createVectorMemory,
   deleteVectorMemory,
   getVectorMemory,
-  listVectorMemories,
-  updateVectorMemory
+  listVectorMemories
 } from "./vectorStore";
 import { isV2Enabled } from "./v2/recall";
 import { searchMemories, toMemoryApiRecord } from "./search";
 import {
   supersedeMemory,
   archiveMemory,
-  createLongtail,
   createMemoryCandidate,
   upsertDailyLog,
-  fetchMemoryLifecycleRows,
-  upsertLongtailEmbedding
+  fetchMemoryLifecycleRows
 } from "../db/v2";
 import { extractDreamMemoriesFromMessages } from "./dreamExtract";
 import { newId } from "../utils/ids";
@@ -153,14 +149,10 @@ function isDreamEnabled(env: Env): boolean {
   return env.ENABLE_DAILY_MEMORY_DIGEST !== "false";
 }
 
-function readDreamStrategy(env: Env): "legacy" | "upsert" | "review" {
+function readDreamStrategy(env: Env): "upsert" | "review" {
   const raw = env.DREAM_STRATEGY;
-  if (raw === "legacy" || raw === "review") return raw;
+  if (raw === "review") return "review";
   return "upsert";
-}
-
-function shouldArchiveDreamDeletesToLongtail(env: Env): boolean {
-  return readString(env.DREAM_ARCHIVE_DELETES_TO_LONGTAIL) === "true";
 }
 
 function readFirstEnvValue(...values: unknown[]): unknown {
@@ -723,38 +715,6 @@ async function cleanEmptyMemories(
   return records.length;
 }
 
-async function saveImportantExcerpts(
-  env: Env,
-  input: { namespace: string; dateLabel: string; excerpts: ImportantExcerpt[]; fallbackMessageIds: string[] }
-): Promise<number> {
-  let saved = 0;
-  const limit = readDreamExcerptLimit(env);
-
-  for (const excerpt of input.excerpts.slice(0, limit)) {
-    const quote = readString(excerpt.quote);
-    if (!quote) continue;
-    const reason = readString(excerpt.reason);
-    const summary = [`【${input.dateLabel} 重要原文】`, reason ? `保存原因：${reason}` : ""]
-      .filter(Boolean)
-      .join("｜");
-
-    await createVectorMemory(env, {
-      namespace: input.namespace,
-      type: "excerpt",
-      content: quote,
-      summary,
-      importance: 0.72,
-      confidence: 0.9,
-      tags: uniqueStrings(["important-excerpt", input.dateLabel, ...(excerpt.tags ?? [])]),
-      source: "dream",
-      sourceMessageIds: excerpt.source_message_ids?.length ? excerpt.source_message_ids : input.fallbackMessageIds
-    });
-    saved += 1;
-  }
-
-  return saved;
-}
-
 async function queueImportantExcerptsForReview(
   env: Env,
   input: { namespace: string; dateLabel: string; excerpts: ImportantExcerpt[]; fallbackMessageIds: string[] }
@@ -1004,8 +964,13 @@ async function applyDreamV2(
   const errors: Array<{ target_id: string; reason: string }> = [];
 
   if (isReview) {
+    queuedCandidates += await queueDreamExtractedMemories(env, {
+      namespace,
+      memories: extracted,
+      messageIds
+    });
     await recordDreamReviewProposal(env, { namespace, dateLabel, digest, messageIds });
-    return { added: 0, updated: 0, deleted: 0, queuedCandidates: 0, excerpts: 0, longtail: 0, errors: [] };
+    return { added: 0, updated: 0, deleted: 0, queuedCandidates, excerpts: 0, longtail: 0, errors: [] };
   }
 
   queuedCandidates += await queueDreamExtractedMemories(env, {
@@ -1330,7 +1295,7 @@ export async function runDailyMemoryDigest(
   const v2Enabled = isV2Enabled(env);
   let existingMemories: MemoryApiRecord[] = [];
   try {
-    if (v2Enabled && strategy !== "legacy") {
+    if (v2Enabled) {
       existingMemories = await selectDreamMemoryContext(env, {
         namespace,
         messages: fetchedMessages,
@@ -1498,9 +1463,29 @@ export async function runDailyMemoryDigest(
   const lastMessage = messages[messages.length - 1];
   const messageIds = messages.map((message) => message.id);
 
-  // v2 path: fact_key upsert + L1 digest + longtail + yesterday_log
-  if (v2Enabled && strategy !== "legacy") {
-    const v2Result = await applyDreamV2(env, {
+  if (!v2Enabled) {
+    console.error("dream: v2 lifecycle disabled; cursor not advanced", { namespace, date: dateLabel });
+    await safeFinishDreamRun(env.DB, {
+      id: dreamRunId,
+      status: "error",
+      reason: "v2_disabled",
+      model: modelResult.model,
+      processedMessages: messages.length
+    });
+    return {
+      ran: false,
+      mode: "dream",
+      date: dateLabel,
+      reason: "v2_disabled",
+      startIso,
+      endIso,
+      cursor,
+      processedMessages: messages.length,
+      model: modelResult.model
+    };
+  }
+
+  const v2Result = await applyDreamV2(env, {
       namespace,
       strategy,
       dateLabel,
