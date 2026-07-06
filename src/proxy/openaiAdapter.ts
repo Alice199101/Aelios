@@ -131,7 +131,7 @@ export async function callOpenAICompat(env: Env, body: OpenAIChatRequest): Promi
           ...buildWorkersAiRunInput(body),
           stream: true
         });
-        return new Response(stream as BodyInit, {
+        return new Response(stream as unknown as BodyInit, {
           status: 200,
           headers: { "content-type": "text/event-stream" }
         });

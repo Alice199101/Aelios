@@ -6,6 +6,7 @@
 
 import { getMessagesByIds } from "../db/messages";
 import {
+  archiveMemory,
   getActiveMemoryByFactKey,
   listMemoryCandidates,
   supersedeMemory,
@@ -170,6 +171,12 @@ async function approveCandidate(
   tags: string[],
   sourceMessageIds: string[]
 ): Promise<string> {
+  if (candidate.source === "dream_delete" && candidate.target_memory_id) {
+    const archived = await archiveMemory(env, { namespace, id: candidate.target_memory_id });
+    if (!archived) throw new Error("target memory not found");
+    return candidate.target_memory_id;
+  }
+
   const factKey = candidate.fact_key?.trim() || null;
 
   if (factKey) {

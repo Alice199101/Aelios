@@ -12,6 +12,7 @@ import { searchMemories, toMemoryApiRecord } from "../memory/search";
 import { deleteVectorMemory } from "../memory/vectorStore";
 import { clampMemoryType } from "../memory/canonicalTypes";
 import {
+  archiveMemory,
   countActiveMemoriesByType,
   countMemoryCandidates,
   createPrecious,
@@ -663,6 +664,24 @@ export async function handleMemoryCandidates(request: Request, env: Env): Promis
     : parseJsonArray(candidate.source_message_ids);
 
   if (action === "approve") {
+    if (candidate.source === "dream_delete" && candidate.target_memory_id) {
+      const archived = await archiveMemory(env, { namespace, id: candidate.target_memory_id });
+      if (!archived) return openAiError("Target memory not found", 404);
+      const updated = await updateMemoryCandidateStatus(env.DB, {
+        namespace,
+        id,
+        status: "approved",
+        targetMemoryId: candidate.target_memory_id,
+        decisionNote: readString(body.decision_note) || "dream_delete approved"
+      });
+      return json({
+        data: {
+          candidate: updated ? toCandidateApiRecord(updated) : null,
+          memory_id: candidate.target_memory_id
+        }
+      });
+    }
+
     const memoryId = await createApprovedMemoryFromCandidate(env, {
       namespace,
       type,

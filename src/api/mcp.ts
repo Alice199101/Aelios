@@ -640,10 +640,19 @@ async function callTool(
     );
   }
 
+  if (params.name === "memory_extract_dryrun") {
+    return toolError(
+      "memory_extract_dryrun is deprecated in v3; extraction runs via the dream nightly pipeline. Use dream dry_run endpoints instead."
+    );
+  }
+
   if (params.name === "diary_get") {
     if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
     const namespace = resolveNamespace(profile, args.namespace);
     const date = readString(args.date);
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return toolError("date must be YYYY-MM-DD");
+    }
     if (date) {
       const row = await getDailyLog(env.DB, { namespace, date });
       if (!row) return textToolResult({ data: null });

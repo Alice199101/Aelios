@@ -95,7 +95,9 @@ type DailyDigestSkipReason =
   | "no_messages"
   | "missing_model"
   | "model_error"
-  | "model_invalid_json";
+  | "model_invalid_json"
+  | "extract_model_error"
+  | "v2_disabled";
 
 interface DailyDigestSkipped {
   ran: false;
@@ -740,38 +742,6 @@ async function queueImportantExcerptsForReview(
   }
 
   return queued;
-}
-
-async function applyMemoryUpdates(
-  env: Env,
-  input: { namespace: string; updates: DigestMemoryUpdate[]; deletes: DigestMemoryDelete[] }
-): Promise<{ updated: number; deleted: number }> {
-  let updated = 0;
-  let deleted = 0;
-
-  for (const item of input.updates) {
-    const existing = await getVectorMemory(env, item.target_id);
-    if (!existing || existing.namespace !== input.namespace || existing.status !== "active") continue;
-
-    const next = await updateVectorMemory(env, item.target_id, {
-      type: item.type,
-      content: item.content,
-      importance: item.importance,
-      confidence: item.confidence,
-      tags: item.tags
-    });
-
-    if (next) updated += 1;
-  }
-
-  for (const item of input.deletes) {
-    const existing = await getVectorMemory(env, item.target_id);
-    if (!existing || existing.status !== "active" || existing.pinned) continue;
-    await deleteVectorMemory(env, item.target_id);
-    deleted += 1;
-  }
-
-  return { updated, deleted };
 }
 
 async function recordDreamReviewProposal(
@@ -1486,70 +1456,13 @@ export async function runDailyMemoryDigest(
   }
 
   const v2Result = await applyDreamV2(env, {
-      namespace,
-      strategy,
-      dateLabel,
-      messages,
-      digest,
-      messageIds,
-      extracted: extractedMemories
-    });
-
-    await writeCursor(env.DB, cursorName, hasMore ? lastMessage.created_at : `done:${lastMessage.created_at}`);
-
-    await safeFinishDreamRun(env.DB, {
-      id: dreamRunId,
-      status: "ok",
-      model: modelResult.model,
-      processedMessages: messages.length,
-      error: v2Result.errors.length > 0 ? JSON.stringify(v2Result.errors) : null
-    });
-
-    return {
-      ran: true,
-      stats: {
-        date: dateLabel,
-        mode: "dream",
-        processedMessages: messages.length,
-        addedMemories: v2Result.added,
-        updatedMemories: v2Result.updated,
-        deletedMemories: v2Result.deleted,
-        queuedCandidates: v2Result.queuedCandidates,
-        savedExcerpts: v2Result.excerpts,
-        cleanedEmptyMemories,
-        cursorAdvanced: true,
-        hasMore,
-        errors: v2Result.errors
-      }
-    };
-  }
-
-  const updates = await applyMemoryUpdates(env, {
     namespace,
-    updates: digest.memories_to_update ?? [],
-    deletes: digest.memories_to_delete ?? []
-  });
-
-  let addedMemories = 0;
-  for (const memory of digest.memories_to_add ?? []) {
-    const saved = await createVectorMemory(env, {
-      namespace,
-      type: memory.type,
-      content: memory.content,
-      importance: memory.importance,
-      confidence: memory.confidence,
-      tags: memory.tags,
-      source: "dream",
-      sourceMessageIds: memory.source_message_ids.length ? memory.source_message_ids : messageIds
-    });
-    if (saved) addedMemories += 1;
-  }
-
-  const savedExcerpts = await saveImportantExcerpts(env, {
-    namespace,
+    strategy,
     dateLabel,
-    excerpts: digest.important_excerpts ?? [],
-    fallbackMessageIds: messageIds
+    messages,
+    digest,
+    messageIds,
+    extracted: extractedMemories
   });
 
   await writeCursor(env.DB, cursorName, hasMore ? lastMessage.created_at : `done:${lastMessage.created_at}`);
@@ -1558,7 +1471,8 @@ export async function runDailyMemoryDigest(
     id: dreamRunId,
     status: "ok",
     model: modelResult.model,
-    processedMessages: messages.length
+    processedMessages: messages.length,
+    error: v2Result.errors.length > 0 ? JSON.stringify(v2Result.errors) : null
   });
 
   return {
@@ -1567,14 +1481,15 @@ export async function runDailyMemoryDigest(
       date: dateLabel,
       mode: "dream",
       processedMessages: messages.length,
-      addedMemories,
-      updatedMemories: updates.updated,
-      deletedMemories: updates.deleted,
-      queuedCandidates: 0,
-      savedExcerpts,
+      addedMemories: v2Result.added,
+      updatedMemories: v2Result.updated,
+      deletedMemories: v2Result.deleted,
+      queuedCandidates: v2Result.queuedCandidates,
+      savedExcerpts: v2Result.excerpts,
       cleanedEmptyMemories,
       cursorAdvanced: true,
-      hasMore
+      hasMore,
+      errors: v2Result.errors
     }
   };
 }

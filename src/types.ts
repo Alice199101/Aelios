@@ -18,12 +18,11 @@ export interface Env {
   GUIDE_DOG_API_KEY?: string;
   CF_AIG_TOKEN?: string;
   ENABLE_AUTO_MEMORY?: string;
-  ENABLE_INCREMENTAL_MEMORY?: string;
   ENABLE_DREAM?: string;
   // --- Aelios 记忆库 v2 行为开关 ---
   // 默认走 v2；只有显式 false 才回退旧路径。
   MEMORY_LIFECYCLE_ENABLED?: string;
-  // dream 策略：默认 upsert，可显式 legacy / review。
+  // dream 策略：默认 upsert，可显式 review。
   DREAM_STRATEGY?: string;
   // 是否把 dream 删除的旧记忆收容进 longtail。默认 false，避免新 v2 内容污染旧大库兜底。
   DREAM_ARCHIVE_DELETES_TO_LONGTAIL?: string;
