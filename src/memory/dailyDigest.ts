@@ -1014,6 +1014,29 @@ async function applyDreamV2(
     messageIds
   });
 
+  for (const item of digest.memories_to_add ?? []) {
+    const content = readString(item.content);
+    if (!content) continue;
+    try {
+      await createMemoryCandidate(env.DB, {
+        namespace,
+        type: item.type ?? "note",
+        content,
+        factKey: item.fact_key ?? null,
+        confidence: item.confidence ?? 0.72,
+        importance: item.importance ?? 0.72,
+        tags: item.tags,
+        sourceMessageIds: item.source_message_ids.length ? item.source_message_ids : messageIds,
+        source: "dream_add"
+      });
+      queuedCandidates += 1;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn("dream: add failed", { namespace, reason });
+      errors.push({ target_id: content.slice(0, 40), reason });
+    }
+  }
+
   const { updates: memoriesToUpdate, deletes: memoriesToDelete } = sanitizeDreamDigestLists(
     digest.memories_to_update ?? [],
     digest.memories_to_delete ?? []
@@ -1362,11 +1385,6 @@ export async function runDailyMemoryDigest(
   }
 
   const digest = modelResult.digest;
-  const extractResult = await extractDreamMemoriesFromMessages(env, {
-    namespace,
-    messages
-  });
-  const extractedMemories = extractResult.memories;
 
   if (!digest) {
     console.error("dream: model did not return valid JSON; cursor not advanced", {
@@ -1398,6 +1416,43 @@ export async function runDailyMemoryDigest(
       model: modelResult.model,
       status: modelResult.status,
       finishReason: modelResult.finishReason
+    };
+  }
+
+  const extractResult = await extractDreamMemoriesFromMessages(env, {
+    namespace,
+    messages
+  });
+  const extractedMemories = extractResult.memories;
+
+  if (extractResult.reason === "model_error") {
+    console.error("dream: extract model failed; cursor not advanced", {
+      date: dateLabel,
+      reason: extractResult.reason,
+      model: extractResult.model,
+      status: extractResult.status
+    });
+    await safeFinishDreamRun(env.DB, {
+      id: dreamRunId,
+      status: "error",
+      reason: "extract_model_error",
+      model: extractResult.model ?? modelResult.model,
+      processedMessages: messages.length,
+      error: extractResult.status
+        ? `status=${extractResult.status}`
+        : "model_error"
+    });
+    return {
+      ran: false,
+      mode: "dream",
+      date: dateLabel,
+      reason: "extract_model_error",
+      startIso,
+      endIso,
+      cursor,
+      processedMessages: messages.length,
+      model: extractResult.model ?? modelResult.model,
+      status: extractResult.status
     };
   }
 
