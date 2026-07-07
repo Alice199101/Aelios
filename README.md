@@ -282,7 +282,7 @@ cmh-lite 客户端每天 23:50（本地时区）会把 `archive/daily/YYYY-MM-DD
 | `GITHUB_DAILY_NAMESPACE` | `DREAM_NAMESPACE` 或 `default` | 入库 namespace |
 | `GITHUB_DAILY_TOKEN` | Secret | fine-grained PAT，**只读**目标仓库 Contents |
 
-对接 cmh-lite 时把 Worker 的 `GITHUB_DAILY_REPO` 指到同一私库即可（客户端仓库说明见 [cmh-lite](https://github.com/PLACEHOLDER/cmh-lite)）。
+客户端怎么产出这些 daily 文件：用 [memory-template](https://github.com/wusaki0723/memory-template) 建你的私有 vault 仓库——它内建 cmh-lite hooks（压缩前 checkpoint、开场注回、每晚自动 commit/push `archive/daily/`）。把 Worker 的 `GITHUB_DAILY_REPO` 指到那个私库，链路就通了。
 
 **清理（后台 Queue，24h 节流）：**
 
