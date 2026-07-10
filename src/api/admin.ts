@@ -200,10 +200,21 @@ document.documentElement.dataset.theme = localStorage.getItem('aelios.admin.colo
         <template x-for="candidate in candidates" :key="candidate.id">
           <article class="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 shadow-sm">
             <div class="mb-3 flex flex-wrap items-center gap-2">
+              <template x-if="candidate.source === 'dream_delete'">
+                <span class="rounded-full bg-red-500/90 px-2.5 py-1 text-xs font-semibold text-zinc-950">删除提案</span>
+              </template>
+              <template x-if="candidate.source === 'dream_update'">
+                <span class="rounded-full bg-amber-400/90 px-2.5 py-1 text-xs font-semibold text-zinc-950">更新提案</span>
+              </template>
               <span class="rounded-full bg-coral px-2.5 py-1 text-xs font-semibold text-zinc-950" x-text="candidate.type"></span>
               <span class="rounded-full border border-zinc-800 px-2.5 py-1 text-xs text-zinc-400" x-text="'confidence ' + pct(candidate.confidence)"></span>
               <span class="min-w-0 truncate text-xs text-zinc-400" x-text="candidate.fact_key || 'no fact_key'"></span>
             </div>
+            <template x-if="candidate.source === 'dream_delete'">
+              <p class="mb-2 text-xs text-red-300/80">
+                通过＝归档这条目标记忆 <span class="font-mono" x-text="candidate.target_memory_id"></span>（原因：<span x-text="candidate.decision_note || '整理'"></span>）。下面内容是被删对象的预览，不是新增。
+              </p>
+            </template>
             <template x-if="!candidate.editing">
               <p class="whitespace-pre-wrap text-sm leading-7 text-zinc-100" x-text="candidate.content"></p>
             </template>
