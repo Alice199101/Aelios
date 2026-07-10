@@ -545,6 +545,27 @@ export async function createMemoryCandidate(
   db: D1Database,
   input: CreateMemoryCandidateInput
 ): Promise<MemoryCandidateRow> {
+  // 幂等闸：同一 namespace 下已有等价的 pending 候选就直接复用，不再入队。
+  // dream 每晚重跑会对同一目标反复提删除/更新提案，没有这道闸队列会被灌满重复项。
+  const dup = input.targetMemoryId
+    ? await db
+        .prepare(
+          `SELECT * FROM memory_candidates
+           WHERE namespace = ? AND status = 'pending' AND source = ? AND target_memory_id = ?
+           LIMIT 1`
+        )
+        .bind(input.namespace, input.source ?? "extract", input.targetMemoryId)
+        .first<MemoryCandidateRow>()
+    : await db
+        .prepare(
+          `SELECT * FROM memory_candidates
+           WHERE namespace = ? AND status = 'pending' AND source = ? AND content = ?
+           LIMIT 1`
+        )
+        .bind(input.namespace, input.source ?? "extract", input.content)
+        .first<MemoryCandidateRow>();
+  if (dup) return dup;
+
   const id = newId("cand");
   const now = nowIso();
   const record: MemoryCandidateRow = {
