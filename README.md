@@ -8,6 +8,18 @@ Aelios 是一个跑在 Cloudflare Workers 上的长期记忆系统。你把 Chat
 
 ---
 
+## 分支指路：先选对版本再动手
+
+| 分支 | 是什么 | 适合谁 |
+|---|---|---|
+| `main` | **v1 稳定版**。本 README 描述的就是它。功能齐、跑得稳，不再加新功能，只修必要的坑 | 想要一个部署完就不用管的记忆库 |
+| [`memory-v2`](../../tree/memory-v2) | **v2 记忆系统，作者自己线上跑的版本**。六层记忆分层、三档写入（即时 / 每4小时 / 凌晨 dream）、v4 Prompt Assembler（缓存锚点 + 时间戳自动拆分，Claude prompt cache 命中率显著更高）、boot 包 + 召回去重三闸 | 想要更聪明的记忆整理，不怕跟着开发分支走 |
+| [`tg-bot`](../../tree/tg-bot) | **memory-v2 + Telegram bot 层**。双子 worker 独立部署、webhook + 队列 debounce 合并连发消息、滚动窗口（50 条折叠成摘要留 10 条）、空行自动分气泡。详见 [docs/telegram-bot.md](../../blob/tg-bot/docs/telegram-bot.md) | 想直接在 Telegram 里和带记忆的 AI 说话 |
+
+v2 **不会**并回 main：main 的用户用得好好的，程序员第一条，能用就别动它。三个分支共享同一套 D1 / Vectorize 资源模型，从 main 换到 v2 只需要把 Cloudflare 构建的 Production branch 改成 `memory-v2`，数据不用迁。tg-bot 是叠在 v2 上的增量，部署方式见其分支文档。
+
+---
+
 ## 它解决什么问题
 
 | 痛点 | Aelios 怎么解 |
@@ -95,7 +107,7 @@ Aelios 是一个跑在 Cloudflare Workers 上的长期记忆系统。你把 Chat
 2. Cloudflare Dashboard → Workers & Pages → Create application → 连 GitHub → 选你的 fork
 3. 填配置：
    - Project name: `companion-memory-proxy`
-   - Production branch: `main`
+   - Production branch: `main`（要用 v2 记忆系统就选 `memory-v2`，见开头「分支指路」）
    - Root directory: `/`
    - **Build command:** `npm ci`
    - **Deploy command:** `npm run deploy:cloudflare`
