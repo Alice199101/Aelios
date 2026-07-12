@@ -25,8 +25,8 @@ MEMORY_FILTER_MAX_TOKENS = "1400"
 # purpose: embeddinggemma under-scores reworded-but-relevant hits (~0.15-0.20).
 # The reranker (bge-reranker-base) + LLM compressor own precision downstream.
 MEMORY_FILTER_MIN_SCORE = "0.1"
-DREAM_MODEL = "deepseek/deepseek-v4-pro"
-VISION_MODEL = "google-ai-studio/gemini-3-flash-preview"
+DREAM_MODEL = "workers-ai/@cf/openai/gpt-oss-120b"
+VISION_MODEL = "workers-ai/@cf/moondream/moondream3.1-9B-A2B"
 MEMORY_BACKEND = "vectorize"
 # Vector recall floor (see MEMORY_FILTER_MIN_SCORE note above). Precision is
 # handled by the reranker + compressor, so keep this as a garbage gate only.
