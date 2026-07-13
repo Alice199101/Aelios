@@ -46,11 +46,12 @@ ON memory_relations(rel_type);
 -- =====================================================================
 -- Z 轴: memories 本体事实版本列
 -- fact_key 与 memory_lifecycle.fact_key 双写；读时 memories 优先，侧车兜底。
--- version_status: current | superseded | under_review（应用层校验枚举）
+-- version_status: current | superseded | under_review（schema CHECK + 应用层校验）
 -- =====================================================================
 -- D1/SQLite: ADD COLUMN 不可逆；migration 元表保证只跑一次。
 ALTER TABLE memories ADD COLUMN fact_key TEXT;
-ALTER TABLE memories ADD COLUMN version_status TEXT DEFAULT 'current';
+ALTER TABLE memories ADD COLUMN version_status TEXT DEFAULT 'current'
+  CHECK (version_status IN ('current', 'superseded', 'under_review'));
 ALTER TABLE memories ADD COLUMN superseded_by TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_memories_fact_key

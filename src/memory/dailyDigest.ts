@@ -1548,30 +1548,54 @@ export async function runDailyMemoryDigest(
 
   await writeCursor(env.DB, cursorName, hasMore ? lastMessage.created_at : `done:${lastMessage.created_at}`);
 
-  const reportErrors = [
-    ...v2Result.errors,
-    ...(zAudit && zAudit.pairs.length > 0
-      ? zAudit.pairs.map((p) => ({
-          target_id: `${p.left_id}|${p.right_id}`,
-          reason: `z_audit:${p.reason}`
-        }))
-      : [])
-  ];
+  // LMC-5 phase report is additive audit data — never stuff into dream_runs.error
+  // (legacy shape is JSON array of apply errors, or null). Persist via memory_events.
+  const hasLmc5Report =
+    relationBuild !== undefined || zAudit !== undefined || perception !== undefined;
+  if (hasLmc5Report) {
+    try {
+      await env.DB
+        .prepare(
+          `INSERT INTO memory_events (id, namespace, event_type, memory_id, payload_json, created_at)
+           VALUES (?, ?, ?, NULL, ?, ?)`
+        )
+        .bind(
+          newId("evt"),
+          namespace,
+          "dream_lmc5_report",
+          JSON.stringify({
+            date: dateLabel,
+            relation_build: relationBuild ?? null,
+            z_audit_pairs: zAudit?.pairs ?? [],
+            z_audit: zAudit
+              ? {
+                  marked_under_review: zAudit.marked_under_review,
+                  edges_inserted: zAudit.edges_inserted,
+                  pairs: zAudit.pairs
+                }
+              : null,
+            perception: perception ?? null
+          }),
+          nowIso()
+        )
+        .run();
+    } catch (error) {
+      console.warn("dream: failed to write lmc5 report event", {
+        namespace,
+        date: dateLabel,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
 
+  // dream_runs.error: restore pre-LMC5 shape — JSON array of {target_id,reason} or null.
+  // Successful runs with only z_audit findings / relation truncation stay status=ok, error=null.
   await safeFinishDreamRun(env.DB, {
     id: dreamRunId,
     status: "ok",
     model: modelResult.model,
     processedMessages: messages.length,
-    error:
-      reportErrors.length > 0 || relationBuild?.truncated
-        ? JSON.stringify({
-            apply_errors: v2Result.errors,
-            z_audit_pairs: zAudit?.pairs ?? [],
-            relation_build: relationBuild ?? null,
-            perception: perception ?? null
-          })
-        : null
+    error: v2Result.errors.length > 0 ? JSON.stringify(v2Result.errors) : null
   });
 
   return {

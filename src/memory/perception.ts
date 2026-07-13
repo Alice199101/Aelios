@@ -8,7 +8,7 @@ import {
   upsertPerceptionCache
 } from "../db/v2";
 import type { Env, PerceptionCacheItem } from "../types";
-import { containsSecret, redactSecrets } from "../utils/redact";
+import { containsSecret, redactEnvValues, redactSecrets } from "../utils/redact";
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_MIN_IMPORTANCE = 0.75;
@@ -52,6 +52,12 @@ export async function runPerceptionPickPhase(
     limit: 30
   });
 
+  // String-only env snapshot for value redaction (Workers bindings that aren't strings are skipped).
+  const envStrings: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env as unknown as Record<string, unknown>)) {
+    if (typeof value === "string") envStrings[key] = value;
+  }
+
   let skippedSecret = 0;
   const picked: PerceptionCacheItem[] = [];
   for (const row of candidates) {
@@ -60,7 +66,8 @@ export async function runPerceptionPickPhase(
       skippedSecret += 1;
       continue;
     }
-    const redacted = redactSecrets(row.content).trim();
+    // cmh-lite rules: regex secret patterns + opt-in env-value redaction (SPEC-LMC5 spontaneous).
+    const redacted = redactEnvValues(redactSecrets(row.content), envStrings).trim();
     if (!redacted) continue;
     picked.push({
       id: row.id,
@@ -88,7 +95,7 @@ export async function loadSpontaneousForBoot(
   env: Env,
   input: { namespace: string; dateLabel?: string; timeZone?: string }
 ): Promise<PerceptionCacheItem[]> {
-  const timeZone = input.timeZone || "Asia/Singapore";
+  const timeZone = input.timeZone || "Asia/Shanghai";
   const dateLabel =
     input.dateLabel ||
     new Intl.DateTimeFormat("en-CA", {

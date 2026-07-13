@@ -303,7 +303,7 @@ async function judgeRelationsForPair(
 async function vectorNeighbors(
   env: Env,
   input: { namespace: string; content: string; excludeId: string; topK: number }
-): Promise<Array<{ id: string; content: string }>> {
+): Promise<Array<{ id: string; content: string; score: number }>> {
   if (!env.VECTORIZE) return [];
   const vector = await createEmbedding(env, input.content);
   if (!vector) return [];
@@ -319,11 +319,15 @@ async function vectorNeighbors(
       score: number;
       metadata?: Record<string, unknown>;
     }>;
+    // Preserve first-seen score per id so callers (z_audit) can reuse without a second embed/query.
+    const scoreById = new Map<string, number>();
     const ids: string[] = [];
     for (const m of matches) {
       const ref = m.metadata?.ref_id;
       const id = typeof ref === "string" && ref.trim() ? ref.trim() : m.id.replace(/^mem_/, "");
       if (!id || id === input.excludeId) continue;
+      if (scoreById.has(id)) continue;
+      scoreById.set(id, m.score);
       ids.push(id);
     }
     if (ids.length === 0) return [];
@@ -331,7 +335,7 @@ async function vectorNeighbors(
     return rows
       .filter((r) => isRecallableMemory(r))
       .slice(0, input.topK)
-      .map((r) => ({ id: r.id, content: r.content }));
+      .map((r) => ({ id: r.id, content: r.content, score: scoreById.get(r.id) ?? 0 }));
   } catch (error) {
     console.error("relation vectorNeighbors failed", error);
     return [];
@@ -359,6 +363,7 @@ export async function runRelationBuildPhase(
   let truncated = false;
 
   for (const seed of seeds) {
+    // Cap is enforced only at top of loop; judged never exceeds RELATION_JUDGE_LIMIT.
     if (judged >= RELATION_JUDGE_LIMIT) {
       truncated = true;
       break;
@@ -372,10 +377,6 @@ export async function runRelationBuildPhase(
     if (neighbors.length === 0) continue;
 
     judged += 1;
-    if (judged > RELATION_JUDGE_LIMIT) {
-      truncated = true;
-      break;
-    }
 
     const judgments = await judgeRelationsForPair(env, {
       src: { id: seed.id, content: seed.content },
@@ -409,7 +410,7 @@ export async function runRelationBuildPhase(
 }
 
 // ---------------------------------------------------------------------------
-// Z 轴 z_audit: 同 fact_key 或高相似冲突 → under_review + contradicts，永不 auto-supersede
+// Z 轴 z_audit: 同 fact_key 或高相似且语义冲突 → under_review + contradicts，永不 auto-supersede
 // ---------------------------------------------------------------------------
 
 export interface ZAuditPair {
@@ -427,6 +428,65 @@ export interface ZAuditStats {
 
 const SIMILARITY_CONFLICT_MIN = 0.88;
 
+/**
+ * LLM judgment: high vector similarity alone is not conflict.
+ * Spec requires "高相似且语义冲突" — only mark under_review + contradicts when the model
+ * confirms a genuine contradiction. On LLM failure, return false (prefer miss over false positive).
+ */
+async function judgeSemanticConflict(
+  env: Env,
+  left: { id: string; content: string },
+  right: { id: string; content: string }
+): Promise<boolean> {
+  const model = readDreamModel(env);
+  const prompt = [
+    "你是记忆冲突审核器。判断两条记忆是否语义矛盾（不能同时为真）。",
+    "高相似或同主题不等于冲突；只有事实对立才算 contradicts。",
+    '只输出 JSON 对象，不要 markdown：{"contradicts": true} 或 {"contradicts": false}',
+    "",
+    `A id=${left.id}: ${left.content.slice(0, 400)}`,
+    `B id=${right.id}: ${right.content.slice(0, 400)}`
+  ].join("\n");
+
+  const body: OpenAIChatRequest = {
+    model,
+    messages: [
+      { role: "system", content: "Output JSON only." },
+      { role: "user", content: prompt }
+    ],
+    temperature: 0,
+    max_tokens: 80
+  };
+
+  try {
+    const response = await callOpenAICompat(env, body);
+    if (!response.ok) return false;
+    const json = (await response.json()) as OpenAIChatResponse;
+    const text = json.choices?.[0]?.message?.content;
+    const content = typeof text === "string" ? text.trim() : "";
+    if (!content) return false;
+    // Accept raw object or fenced/embedded JSON
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      const start = content.indexOf("{");
+      const end = content.lastIndexOf("}");
+      if (start === -1 || end <= start) return false;
+      try {
+        parsed = JSON.parse(content.slice(start, end + 1));
+      } catch {
+        return false;
+      }
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    return (parsed as { contradicts?: unknown }).contradicts === true;
+  } catch (error) {
+    console.warn("z_audit contradiction judge failed", error);
+    return false;
+  }
+}
+
 export async function runZAuditPhase(
   env: Env,
   input: { namespace: string; startIso: string; endIso: string }
@@ -435,34 +495,45 @@ export async function runZAuditPhase(
   let marked = 0;
   let edges = 0;
 
-  // 1) same fact_key multi current
+  // 1) same fact_key multi current — multi-current same key is itself the conflict signal
+  //    (spec OR branch: 同 fact_key …). No LLM needed.
+  //
+  // Edge policy for groups with >2 ids (ids ordered updated_at DESC, so ids[0] is newest):
+  //   Create contradicts edges from each older id → newest (N-1 edges), not full pairwise.
+  //   Rationale: review queue is "which current versions conflict with the latest claim";
+  //   N-1 edges scale better than N*(N-1)/2 and still cover every non-newest member.
+  //   All ids in the group are marked under_review.
   const groups = await listDuplicateFactKeyGroups(env.DB, { namespace: input.namespace, limit: 40 });
   for (const group of groups) {
-    // pair first two (oldest conflict surface); more ids still all go under_review
-    const [a, b] = group.ids;
-    if (!a || !b) continue;
-    pairs.push({
-      left_id: a,
-      right_id: b,
-      fact_key: group.fact_key,
-      reason: `duplicate_fact_key:${group.fact_key}`
-    });
+    if (group.ids.length < 2) continue;
+    const newest = group.ids[0]!;
+    const older = group.ids.slice(1);
+
     marked += await markMemoriesUnderReview(env.DB, {
       namespace: input.namespace,
       ids: group.ids,
       reason: `z_audit:duplicate_fact_key:${group.fact_key}`
     });
-    const edge = await insertMemoryRelation(env.DB, {
-      srcId: a,
-      dstId: b,
-      relType: "contradicts",
-      weight: 0.5,
-      createdBy: "dream"
-    });
-    if (edge === "inserted") edges += 1;
+
+    for (const olderId of older) {
+      pairs.push({
+        left_id: olderId,
+        right_id: newest,
+        fact_key: group.fact_key,
+        reason: `duplicate_fact_key:${group.fact_key}`
+      });
+      const edge = await insertMemoryRelation(env.DB, {
+        srcId: olderId,
+        dstId: newest,
+        relType: "contradicts",
+        weight: 0.5,
+        createdBy: "dream"
+      });
+      if (edge === "inserted") edges += 1;
+    }
   }
 
-  // 2) high-similarity pairs among today's updates (semantic conflict probe)
+  // 2) high-similarity + LLM-confirmed semantic conflict among today's updates
   const recent = await listMemoriesUpdatedInRange(env.DB, {
     namespace: input.namespace,
     startIso: input.startIso,
@@ -473,59 +544,52 @@ export async function runZAuditPhase(
   if (env.VECTORIZE && recent.length > 1) {
     const seenPair = new Set(pairs.map((p) => [p.left_id, p.right_id].sort().join("|")));
     for (const seed of recent.slice(0, 20)) {
-      const neighbors = await vectorNeighbors(env, {
-        namespace: input.namespace,
-        content: seed.content,
-        excludeId: seed.id,
-        topK: 3
-      });
-      // Re-query scores for threshold
-      const vector = await createEmbedding(env, seed.content);
-      if (!vector) continue;
+      // Single embed + single vector query + D1 fetch; reuse scores (no second pass).
+      let neighbors: Array<{ id: string; content: string; score: number }>;
       try {
-        const result = await env.VECTORIZE.query(vector, {
-          topK: 4,
+        neighbors = await vectorNeighbors(env, {
           namespace: input.namespace,
-          returnMetadata: true,
-          filter: { namespace: input.namespace, kind: "memory" } as VectorizeVectorMetadataFilter
-        } as unknown as Parameters<typeof env.VECTORIZE.query>[1]);
-        const matches = (result?.matches ?? []) as Array<{
-          id: string;
-          score: number;
-          metadata?: Record<string, unknown>;
-        }>;
-        for (const m of matches) {
-          if (m.score < SIMILARITY_CONFLICT_MIN) continue;
-          const ref = m.metadata?.ref_id;
-          const nid = typeof ref === "string" && ref.trim() ? ref.trim() : m.id.replace(/^mem_/, "");
-          if (!nid || nid === seed.id) continue;
-          const key = [seed.id, nid].sort().join("|");
-          if (seenPair.has(key)) continue;
-          // Only flag if neighbor is also in today's set or high-importance active — keep scope tight
-          const neighborInRecent = recent.some((r) => r.id === nid) || neighbors.some((n) => n.id === nid);
-          if (!neighborInRecent) continue;
-          seenPair.add(key);
-          pairs.push({
-            left_id: seed.id,
-            right_id: nid,
-            reason: `high_similarity:${m.score.toFixed(3)}`
-          });
-          marked += await markMemoriesUnderReview(env.DB, {
-            namespace: input.namespace,
-            ids: [seed.id, nid],
-            reason: `z_audit:high_similarity`
-          });
-          const edge = await insertMemoryRelation(env.DB, {
-            srcId: seed.id,
-            dstId: nid,
-            relType: "contradicts",
-            weight: 0.5,
-            createdBy: "dream"
-          });
-          if (edge === "inserted") edges += 1;
-        }
+          content: seed.content,
+          excludeId: seed.id,
+          topK: 3
+        });
       } catch (error) {
         console.warn("z_audit similarity probe failed", error);
+        continue;
+      }
+
+      for (const neighbor of neighbors) {
+        if (neighbor.score < SIMILARITY_CONFLICT_MIN) continue;
+        const key = [seed.id, neighbor.id].sort().join("|");
+        if (seenPair.has(key)) continue;
+
+        // Spec: 高相似且语义冲突 — similarity is necessary but not sufficient.
+        const contradicts = await judgeSemanticConflict(
+          env,
+          { id: seed.id, content: seed.content },
+          { id: neighbor.id, content: neighbor.content }
+        );
+        if (!contradicts) continue;
+
+        seenPair.add(key);
+        pairs.push({
+          left_id: seed.id,
+          right_id: neighbor.id,
+          reason: `high_similarity_conflict:${neighbor.score.toFixed(3)}`
+        });
+        marked += await markMemoriesUnderReview(env.DB, {
+          namespace: input.namespace,
+          ids: [seed.id, neighbor.id],
+          reason: `z_audit:high_similarity_conflict`
+        });
+        const edge = await insertMemoryRelation(env.DB, {
+          srcId: seed.id,
+          dstId: neighbor.id,
+          relType: "contradicts",
+          weight: 0.5,
+          createdBy: "dream"
+        });
+        if (edge === "inserted") edges += 1;
       }
     }
   }

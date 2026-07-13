@@ -169,8 +169,9 @@ export async function buildBootPackage(
 
   // 昨天的日志 (dream 产出)
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const bootTimeZone = env.DREAM_TIME_ZONE || "Asia/Shanghai";
   const yesterdayLabel = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Singapore",
+    timeZone: bootTimeZone,
     year: "numeric", month: "2-digit", day: "2-digit"
   }).format(yesterday);
   const dailyLog = await getDailyLog(env.DB, { namespace: input.namespace, date: yesterdayLabel });
@@ -180,7 +181,7 @@ export async function buildBootPackage(
   try {
     spontaneous = await loadSpontaneousForBoot(env, {
       namespace: input.namespace,
-      timeZone: env.DREAM_TIME_ZONE || "Asia/Singapore"
+      timeZone: bootTimeZone
     });
   } catch (error) {
     console.warn("boot: load spontaneous failed", error);
