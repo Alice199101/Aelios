@@ -18,6 +18,7 @@ import {
 } from "./api/memories";
 import { handleMcp } from "./api/mcp";
 import { handleModels } from "./api/models";
+import { handleRelationsGraph } from "./api/relations";
 import { runDailyMemoryDigest, runDreamBackfill } from "./memory/dailyDigest";
 import { runGithubDailyPull } from "./memory/githubDaily";
 import { runMemoryRetention } from "./memory/retention";
@@ -92,6 +93,10 @@ export default {
 
     if (url.pathname === "/api/memories/export") {
       return handleMemories(request, env, ctx);
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/relations/graph") {
+      return handleRelationsGraph(request, env);
     }
 
     if (url.pathname === "/v1/memory" || url.pathname.startsWith("/v1/memory/")) {
