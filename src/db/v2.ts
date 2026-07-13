@@ -33,7 +33,12 @@ export function isMemoryRelType(value: string): value is MemoryRelType {
   return (MEMORY_REL_TYPES as readonly string[]).includes(value);
 }
 
-// Safe edges write at full weight; semantic edges write at 0.5 (SPEC-LMC5 Y 轴).
+// Relation weight policy (SPEC-LMC5 Y 轴 + LMC-5 extension):
+// - Spec names same_thread/derived_from as safe (1.0) and contradicts/cause_effect as semantic (0.5).
+// - supports/supersedes are not classified in the spec; we treat them as safe/full-weight (1.0):
+//   supports affirms without conflict risk; supersedes is an explicit version-chain edge written
+//   on confirmed supersede, not a soft semantic guess. Documented deviation from the two-bucket
+//   wording only — not a silent weight change.
 export function defaultRelationWeight(relType: MemoryRelType): number {
   if (relType === "same_thread" || relType === "derived_from" || relType === "supports" || relType === "supersedes") {
     return 1.0;
@@ -742,6 +747,9 @@ export interface MemoryV2Patch {
 // so N ids bind N+1 variables. Keep the batch size under 99 to stay safe; 90
 // leaves headroom for any future extra params.
 const SQLITE_BIND_BATCH_SIZE = 90;
+// listRelationsForIds binds each id twice (src IN (...) OR dst IN (...)).
+// 45 * 2 = 90 binds, same headroom as SQLITE_BIND_BATCH_SIZE.
+const SQLITE_DOUBLE_BIND_BATCH_SIZE = Math.floor(SQLITE_BIND_BATCH_SIZE / 2);
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim()))];
@@ -1368,6 +1376,7 @@ export async function insertMemoryRelation(
 }
 
 // 双向查邻居边：seed id 出现在 src 或 dst 的所有边。
+// Batch size accounts for double-bind (src IN + dst IN) so total binds stay ≤ D1's 100 limit.
 export async function listRelationsForIds(
   db: D1Database,
   memoryIds: string[]
@@ -1375,10 +1384,10 @@ export async function listRelationsForIds(
   const ids = uniqueStrings(memoryIds);
   if (ids.length === 0) return [];
   const rows: MemoryRelationRow[] = [];
-  for (let index = 0; index < ids.length; index += SQLITE_BIND_BATCH_SIZE) {
-    const batch = ids.slice(index, index + SQLITE_BIND_BATCH_SIZE);
+  for (let index = 0; index < ids.length; index += SQLITE_DOUBLE_BIND_BATCH_SIZE) {
+    const batch = ids.slice(index, index + SQLITE_DOUBLE_BIND_BATCH_SIZE);
     const placeholders = batch.map(() => "?").join(", ");
-    // 同一批 id 用于 src 与 dst 两个 IN 子句
+    // 同一批 id 用于 src 与 dst 两个 IN 子句（binds = 2 × batch.length）
     const result = await db
       .prepare(
         `SELECT id, src_id, dst_id, rel_type, weight, created_by, created_at
