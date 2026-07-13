@@ -30,7 +30,20 @@ function parseJsonArray(value: string | null): string[] {
   }
 }
 
+// LMC-5: 默认可注入的记忆 = status active 且 version_status 非 superseded。
+// under_review 仍可召回；superseded 版本只在显式 includeHistory 时返回。
+export function isRecallableMemory(
+  record: Pick<MemoryRecord, "status" | "version_status">,
+  options?: { includeHistory?: boolean }
+): boolean {
+  if (record.status !== "active") return false;
+  if (options?.includeHistory) return true;
+  const vs = record.version_status ?? "current";
+  return vs !== "superseded";
+}
+
 // v2 字段从 memory_lifecycle 侧车表合并 (可选)。lc 传 undefined 时 v2 字段全 null。
+// LMC-5: fact_key / version_status / superseded_by 优先读 memories 本体，侧车兜底。
 export function toMemoryApiRecord(
   record: MemoryRecord,
   score?: number,
@@ -56,14 +69,17 @@ export function toMemoryApiRecord(
     updated_at: record.updated_at,
     expires_at: record.expires_at,
     // v2 字段 (侧车表)，闸三降权靠 last_injected_at，supersede 链靠 supersedes_*。
-    fact_key: lc?.fact_key ?? null,
+    // fact_key: 本体优先 (0007)，侧车兜底。
+    fact_key: record.fact_key ?? lc?.fact_key ?? null,
     supersedes_id: lc?.supersedes_id ?? null,
-    superseded_by_id: lc?.superseded_by_id ?? null,
+    superseded_by_id: lc?.superseded_by_id ?? record.superseded_by ?? null,
     review_reason: lc?.review_reason ?? null,
     valid_as_of: lc?.valid_as_of ?? null,
     last_seen_at: lc?.last_seen_at ?? null,
     seen_count: lc?.seen_count ?? 0,
     last_injected_at: lc?.last_injected_at ?? null,
+    version_status: record.version_status ?? (record.status === "superseded" ? "superseded" : "current"),
+    superseded_by: record.superseded_by ?? lc?.superseded_by_id ?? null,
     ...(score === undefined ? {} : { score })
   };
 }
@@ -230,7 +246,7 @@ interface VectorizeSearchOutcome {
 
 async function searchWithVectorize(
   env: Env,
-  input: { namespace: string; query: string; types?: string[]; topK: number }
+  input: { namespace: string; query: string; types?: string[]; topK: number; includeHistory?: boolean }
 ): Promise<VectorizeSearchOutcome | null> {
   if (!env.VECTORIZE || !input.query.trim()) return null;
 
@@ -279,8 +295,11 @@ async function searchWithVectorize(
     ids: [...scoredIds.keys()]
   });
 
-  // Only return active memories — expired/deleted/superseded must not be injected
-  const activeRecords = allRecords.filter((record) => record.status === "active");
+  // Only return recallable memories — expired/deleted/superseded (status or version_status) must not be injected
+  // includeHistory: allow version_status=superseded rows when caller opts in (LMC-5 additive).
+  const activeRecords = allRecords.filter((record) =>
+    isRecallableMemory(record, { includeHistory: input.includeHistory })
+  );
 
   // Use allRecords (not just active) so inactive D1 records block legacy fallback
   const foundD1Ids = new Set(allRecords.map((record) => record.id));
@@ -321,14 +340,15 @@ async function searchWithVectorize(
 // 供 v2 recall 管线在 meta 里透出，观察 legacy 孤儿向量的占比。
 export async function searchMemoriesWithProvenance(
   env: Env,
-  input: { namespace: string; query: string; types?: string[]; topK?: number }
+  input: { namespace: string; query: string; types?: string[]; topK?: number; includeHistory?: boolean }
 ): Promise<SearchMemoriesResult> {
   const topK = getTopK(env, input.topK);
   const vectorOutcome = await searchWithVectorize(env, {
     namespace: input.namespace,
     query: input.query,
     types: input.types,
-    topK
+    topK,
+    includeHistory: input.includeHistory
   });
 
   let records: Array<MemoryRecord & { score: number; backed: boolean }>;
