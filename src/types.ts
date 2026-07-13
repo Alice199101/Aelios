@@ -109,16 +109,6 @@ export interface Env {
   ENABLE_CACHE_API?: string;
   CACHE_DEFAULT_TTL_SECONDS?: string;
   CACHE_MAX_VALUE_BYTES?: string;
-  // --- 飞书消息桥 (SPEC-FEISHU.md，全部 Secret，可选) ---
-  FEISHU_APP_ID?: string;
-  FEISHU_APP_SECRET?: string;
-  FEISHU_VERIFICATION_TOKEN?: string;
-  // 可为空字符串 = 明文模式；未配置时若 body 带 encrypt 则 503
-  FEISHU_ENCRYPT_KEY?: string;
-  // 逗号分隔 open_id 白名单；send 缺省 receive_id = 第一项
-  FEISHU_ALLOWED_OPEN_IDS?: string;
-  BRIDGE_TG_BOT_TOKEN?: string;
-  BRIDGE_TG_CHAT_ID?: string;
 }
 
 export interface MemoryMaintenanceQueueMessage {
