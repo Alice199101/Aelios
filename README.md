@@ -421,6 +421,10 @@ CLEANUP_MODEL="deepseek/deepseek-v4-flash" \
 npm run vectorize:clean:llm
 ```
 
+## 致谢
+
+- 关系图 + 2-hop 联想召回、`fact_key` 事实版本化、perception 自发浮现这三个设计，参考自 [LMC-5（Living Memory Coordinate-5）](https://github.com/wuxuyun0606-collab/lmc-5) 的 Y/Z 轴与 spontaneous recall 模型。LMC-5 是 PostgreSQL/pgvector 参考实现，Aelios 按 CF Worker + D1 + Vectorize 的形状重写了这三样，只抄了模型没抄代码——但思路是人家的，谢谢。
+
 ## License
 
 MIT
