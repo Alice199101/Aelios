@@ -1408,7 +1408,7 @@ export async function getWeeklyLog(
   return row ?? null;
 }
 
-export async function upsertWeeklyLog(
+export function bindUpsertWeeklyLogStatement(
   db: D1Database,
   input: {
     namespace: string;
@@ -1419,9 +1419,9 @@ export async function upsertWeeklyLog(
     summary: string;
     sourceDays: number;
   }
-): Promise<WeeklyLogRow> {
+): D1PreparedStatement {
   const now = nowIso();
-  await db
+  return db
     .prepare(
       `INSERT INTO weekly_log (namespace, week, start_date, end_date, title, summary, source_days, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1442,8 +1442,23 @@ export async function upsertWeeklyLog(
       input.summary,
       input.sourceDays,
       now
-    )
-    .run();
+    );
+}
+
+export async function upsertWeeklyLog(
+  db: D1Database,
+  input: {
+    namespace: string;
+    week: string;
+    startDate: string;
+    endDate: string;
+    title: string;
+    summary: string;
+    sourceDays: number;
+  }
+): Promise<WeeklyLogRow> {
+  const now = nowIso();
+  await bindUpsertWeeklyLogStatement(db, input).run();
   return {
     namespace: input.namespace,
     week: input.week,
@@ -1456,19 +1471,25 @@ export async function upsertWeeklyLog(
   };
 }
 
-export async function deleteDailyLogsInRange(
+export function bindDeleteDailyLogsInRangeStatement(
   db: D1Database,
   input: { namespace: string; startDate: string; endDate: string }
-): Promise<number> {
-  const result = await db
+): D1PreparedStatement {
+  return db
     .prepare(
       `DELETE FROM daily_log
        WHERE namespace = ?
          AND date >= ?
          AND date <= ?`
     )
-    .bind(input.namespace, input.startDate, input.endDate)
-    .run();
+    .bind(input.namespace, input.startDate, input.endDate);
+}
+
+export async function deleteDailyLogsInRange(
+  db: D1Database,
+  input: { namespace: string; startDate: string; endDate: string }
+): Promise<number> {
+  const result = await bindDeleteDailyLogsInRangeStatement(db, input).run();
   return result.meta.changes ?? 0;
 }
 
