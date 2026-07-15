@@ -14,7 +14,7 @@
  * Tests:
  *   1. Determinism — same ctx twice → identical output
  *   2. Pinned sort — different insertion order → identical output
- *   3. Cache anchor — falls on client_system position
+ *   3. Cache anchor — falls on persona_pinned position
  *   4. Image passthrough — image_url content preserved in messages
  *   5. Tool filtering — tool messages excluded from history
  */
@@ -39,9 +39,10 @@ function simpleHash(text) {
 
 const BLOCK_ORDER = [
   "proxy_static_rules",
-  "persona_pinned",
   "preset_lite",
   "client_system",
+  "persona_pinned",
+  "boot_stable",
   "client_volatile_context",
   "dynamic_memory_patch",
   "vision_context",
@@ -50,6 +51,19 @@ const BLOCK_ORDER = [
 ];
 
 const PERSONA_MEMORY_TYPES = ["identity", "persona"];
+
+const TURN_CONTEXT_BLOCK_IDS = [
+  "client_volatile_context",
+  "dynamic_memory_patch",
+  "vision_context",
+];
+
+function countMessageBlocks(content) {
+  if (content == null) return 0;
+  if (typeof content === "string") return 1;
+  if (!Array.isArray(content)) return 0;
+  return content.length;
+}
 
 // ---------------------------------------------------------------------------
 // Text constants — must match src/assembler/blocks.ts
@@ -94,6 +108,9 @@ function messageToOutput(msg) {
 function isVolatileTimeLine(line) {
   const trimmed = line.trim();
   if (!trimmed) return false;
+  if (/^[【\[](?:当前|现在|系统|本地)?(?:时间|日期|日期时间|时间戳)[】\]]$/.test(trimmed)) return true;
+  if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}(\s+\d{1,2}:\d{2}(:\d{2})?)?$/.test(trimmed)) return true;
+  if (/^星期\s*[:：]/.test(trimmed)) return true;
   const normalized = trimmed.replace(/^[>*\-\d.)\s]+/, "").trim();
   const lower = normalized.toLowerCase();
 
@@ -114,6 +131,8 @@ function isVolatileTimeLine(line) {
   return hasTimeLabel && (hasDateLikeValue || /\btimezone\b/i.test(normalized) || /时区/.test(normalized));
 }
 
+const VOLATILE_SECTION_HEADER = /^[【\[](?:当前时间|相关记忆|动态上下文|当前位置|系统状态)[】\]]$/;
+
 function splitClientSystemTexts(texts) {
   const stable = [];
   const volatile = [];
@@ -121,9 +140,26 @@ function splitClientSystemTexts(texts) {
   for (const text of texts) {
     const stableLines = [];
     const volatileLines = [];
+    let inVolatileSection = false;
 
     for (const line of text.split(/\r?\n/)) {
-      if (isVolatileTimeLine(line)) volatileLines.push(line.trim());
+      const trimmed = line.trim();
+      if (VOLATILE_SECTION_HEADER.test(trimmed)) {
+        inVolatileSection = true;
+        volatileLines.push(trimmed);
+        continue;
+      }
+
+      if (inVolatileSection) {
+        if (!trimmed) {
+          inVolatileSection = false;
+          continue;
+        }
+        volatileLines.push(trimmed);
+        continue;
+      }
+
+      if (isVolatileTimeLine(line)) volatileLines.push(trimmed);
       else stableLines.push(line);
     }
 
@@ -136,14 +172,75 @@ function splitClientSystemTexts(texts) {
   return { stable, volatile };
 }
 
+function computeCacheBreakpoints(historyMessages, anchorIndices) {
+  const LOOKBACK = 16;
+  const breakpoints = [];
+
+  for (const anchorIndex of anchorIndices) {
+    breakpoints.push({
+      target: "system",
+      system_block_index: anchorIndex,
+      reason: "system",
+    });
+  }
+
+  const msgBlockCounts = historyMessages.map((m) => countMessageBlocks(m.content));
+
+  let tailIdx = -1;
+  let tailBlockIdx = -1;
+  if (historyMessages.length >= 1) {
+    tailIdx = historyMessages.length - 1;
+    tailBlockIdx = Math.max(0, msgBlockCounts[tailIdx] - 1);
+  }
+
+  if (tailIdx >= 0) {
+    breakpoints.push({
+      target: "message",
+      message_index: tailIdx,
+      block_index: tailBlockIdx,
+      reason: "tail",
+    });
+
+    let blocksBeforeTail = 0;
+    for (let i = 0; i < tailIdx; i++) blocksBeforeTail += msgBlockCounts[i];
+
+    if (blocksBeforeTail > LOOKBACK) {
+      let target = blocksBeforeTail - LOOKBACK;
+      let accumulated = 0;
+      let bridgeMsgIdx = 0;
+      let bridgeBlockIdx = 0;
+      for (let i = 0; i < tailIdx; i++) {
+        if (accumulated + msgBlockCounts[i] > target) {
+          bridgeMsgIdx = i;
+          bridgeBlockIdx = target - accumulated;
+          break;
+        }
+        accumulated += msgBlockCounts[i];
+      }
+      if (bridgeMsgIdx !== tailIdx || bridgeBlockIdx !== tailBlockIdx) {
+        breakpoints.push({
+          target: "message",
+          message_index: bridgeMsgIdx,
+          block_index: bridgeBlockIdx,
+          reason: "bridge",
+        });
+      }
+    }
+  }
+
+  return breakpoints;
+}
+
 function assemble(ctx) {
   const systemBlocks = [];
   const messages = [];
   const enabledBlockIds = [];
-  let anchorIndex = -1;
+  const turnContextParts = [];
+  const anchorIndices = [];
+  let personaPinnedIndex = -1;
+  let clientSystemText = null;
 
   for (const blockId of BLOCK_ORDER) {
-    // --- passthrough blocks → messages ---
     if (blockId === "recent_history") {
       let added = false;
       for (const msg of ctx.historyMessages) {
@@ -158,17 +255,9 @@ function assemble(ctx) {
     }
 
     if (blockId === "current_user") {
-      if (ctx.currentUserMessage) {
-        const out = messageToOutput(ctx.currentUserMessage);
-        if (out) {
-          messages.push(out);
-          enabledBlockIds.push(blockId);
-        }
-      }
       continue;
     }
 
-    // --- stable / dynamic blocks → system_blocks ---
     let text = null;
 
     if (blockId === "proxy_static_rules") {
@@ -196,52 +285,103 @@ function assemble(ctx) {
         .filter(Boolean);
       const { stable } = splitClientSystemTexts(texts);
       if (stable.length > 0) text = stable.join("\n\n");
-    } else if (blockId === "client_volatile_context") {
-      const texts = ctx.systemMessages
-        .filter((m) => m.role === "system")
-        .map((m) => (typeof m.content === "string" ? m.content.trim() : ""))
-        .filter(Boolean);
-      const { volatile } = splitClientSystemTexts(texts);
-      if (volatile.length > 0) {
-        text = [
-          "<volatile_context>",
-          "以下是客户端提供的当前时间/日期等本轮上下文，只用于当前回复，不要当作长期设定。",
-          ...volatile,
-          "</volatile_context>",
-        ].join("\n");
+    } else if (blockId === "boot_stable") {
+      if (ctx.boot) {
+        const parts = [];
+        if (ctx.boot.yesterday_log) {
+          parts.push(
+            "<yesterday_log>",
+            `【${ctx.boot.yesterday_log.title}】${ctx.boot.yesterday_log.summary}`,
+            "</yesterday_log>"
+          );
+        }
+        if (ctx.boot.glossary && ctx.boot.glossary.length > 0) {
+          const entries = ctx.boot.glossary.map((g) => `${g.term}: ${g.definition}`);
+          parts.push("<glossary>", ...entries, "</glossary>");
+        }
+        if (parts.length > 0) text = parts.join("\n");
       }
-    } else if (blockId === "dynamic_memory_patch") {
-      if (ctx.ragMemories.length > 0) {
-        const lines = ctx.ragMemories.map(
-          (m) => `- [${m.type}][importance=${m.importance.toFixed(2)}] ${m.content}`
-        );
-        text = ["<memories>", ...lines, "</memories>"].join("\n");
+    } else if (TURN_CONTEXT_BLOCK_IDS.includes(blockId)) {
+      if (blockId === "client_volatile_context") {
+        const texts = ctx.systemMessages
+          .filter((m) => m.role === "system")
+          .map((m) => (typeof m.content === "string" ? m.content.trim() : ""))
+          .filter(Boolean);
+        const { volatile } = splitClientSystemTexts(texts);
+        if (volatile.length > 0) {
+          text = [
+            "<volatile_context>",
+            "以下是客户端提供的当前时间/日期等本轮上下文，只用于当前回复，不要当作长期设定。",
+            ...volatile,
+            "</volatile_context>",
+          ].join("\n");
+        }
+      } else if (blockId === "dynamic_memory_patch") {
+        if (ctx.ragMemories.length > 0) {
+          const lines = ctx.ragMemories.map(
+            (m) => `- [${m.type}][importance=${m.importance.toFixed(2)}] ${m.content}`
+          );
+          text = ["<memories>", ...lines, "</memories>"].join("\n");
+        }
+      } else if (blockId === "vision_context") {
+        if (ctx.visionOutput) {
+          text = `<vision_context>\n${ctx.visionOutput}\n</vision_context>`;
+        }
       }
-    } else if (blockId === "vision_context") {
-      if (ctx.visionOutput) {
-        text = `<vision_context>\n${ctx.visionOutput}\n</vision_context>`;
+
+      if (text !== null) {
+        turnContextParts.push(text);
+        enabledBlockIds.push(blockId);
       }
+      continue;
     }
 
     if (text === null) continue;
 
     const systemBlock = { role: "system", text };
     if (blockId === "client_system") {
+      clientSystemText = text;
+    }
+    if (blockId === "persona_pinned" || blockId === "boot_stable") {
       systemBlock.cache_control = { type: "ephemeral", ttl: "5m" };
-      anchorIndex = systemBlocks.length;
+      anchorIndices.push(systemBlocks.length);
+      if (blockId === "persona_pinned") {
+        personaPinnedIndex = systemBlocks.length;
+      }
     }
 
     systemBlocks.push(systemBlock);
     enabledBlockIds.push(blockId);
   }
 
-  let clientSystemHash = "none";
-  for (let i = 0; i < systemBlocks.length; i++) {
-    if (enabledBlockIds[i] === "client_system") {
-      clientSystemHash = simpleHash(systemBlocks[i].text);
-      break;
+  // Backward-compatible: only persona_pinned owns anchor_index; boot_stable alone → -1
+  const anchorIndex = personaPinnedIndex;
+  const breakpoints = computeCacheBreakpoints(messages, anchorIndices);
+
+  const turnContextText = turnContextParts.join("\n\n").trim();
+  if (turnContextText) {
+    if (!ctx.currentUserMessage) {
+      console.error(
+        "[assembler] skipping turn_context injection: no current_user message"
+      );
+      for (const id of TURN_CONTEXT_BLOCK_IDS) {
+        const idx = enabledBlockIds.indexOf(id);
+        if (idx >= 0) enabledBlockIds.splice(idx, 1);
+      }
+    } else {
+      messages.push({ role: "user", content: turnContextText });
     }
   }
+
+  if (ctx.currentUserMessage) {
+    const out = messageToOutput(ctx.currentUserMessage);
+    if (out) {
+      messages.push(out);
+      enabledBlockIds.push("current_user");
+    }
+  }
+
+  const clientSystemHash = clientSystemText ? simpleHash(clientSystemText) : "none";
 
   return {
     system_blocks: systemBlocks,
@@ -250,6 +390,7 @@ function assemble(ctx) {
       anchor_index: anchorIndex,
       block_ids: enabledBlockIds,
       client_system_hash: clientSystemHash,
+      cache_breakpoints: breakpoints,
     },
   };
 }
@@ -419,32 +560,35 @@ check("different importance → sorted desc, not by insertion", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 3: Cache anchor on client_system
+// Test 3: Cache anchor on persona_pinned
 // ---------------------------------------------------------------------------
 
 console.log("\n--- Test 3: Cache anchor position ---");
 
-check("anchor_index points to client_system in system_blocks", () => {
+check("anchor_index points to persona_pinned in system_blocks", () => {
   const ctx = makeBaseCtx();
   const result = assemble(ctx);
 
-  const csIdx = result.meta.block_ids.indexOf("client_system");
-  assert.ok(csIdx >= 0, "client_system should be in block_ids");
-  assert.strictEqual(result.meta.anchor_index, csIdx);
+  const ppIdx = result.meta.block_ids.indexOf("persona_pinned");
+  assert.ok(ppIdx >= 0, "persona_pinned should be in block_ids");
+  assert.strictEqual(result.meta.anchor_index, ppIdx);
 });
 
-check("client_system block has cache_control", () => {
+check("persona_pinned block has cache_control", () => {
   const ctx = makeBaseCtx();
   const result = assemble(ctx);
 
-  const csIdx = result.meta.block_ids.indexOf("client_system");
-  const block = result.system_blocks[csIdx];
+  const ppIdx = result.meta.block_ids.indexOf("persona_pinned");
+  const block = result.system_blocks[ppIdx];
   assert.deepStrictEqual(block.cache_control, { type: "ephemeral", ttl: "5m" });
 });
 
-check("no other block has cache_control", () => {
+check("no other block has cache_control (no boot → single anchor)", () => {
   const ctx = makeBaseCtx();
   const result = assemble(ctx);
+
+  const systemBPs = result.meta.cache_breakpoints.filter((bp) => bp.reason === "system");
+  assert.strictEqual(systemBPs.length, 1, "without boot: exactly one system breakpoint");
 
   for (let i = 0; i < result.system_blocks.length; i++) {
     if (i === result.meta.anchor_index) continue;
@@ -456,29 +600,102 @@ check("no other block has cache_control", () => {
   }
 });
 
-check("stable blocks come before client_system, dynamic after", () => {
+check("with boot: persona_pinned and boot_stable are both cache anchors", () => {
   const ctx = makeBaseCtx();
+  ctx.boot = {
+    yesterday_log: { title: "昨日", summary: "聊了缓存" },
+    glossary: [{ term: "Aelios", definition: "记忆系统" }],
+    precious: [],
+  };
   const result = assemble(ctx);
 
-  const csPos = result.meta.block_ids.indexOf("client_system");
-  const stableBefore = ["proxy_static_rules", "persona_pinned", "preset_lite"];
-  const dynamicAfter = ["dynamic_memory_patch", "vision_context"];
+  const ppIdx = result.meta.block_ids.indexOf("persona_pinned");
+  const bootIdx = result.meta.block_ids.indexOf("boot_stable");
+  assert.ok(ppIdx >= 0, "persona_pinned present");
+  assert.ok(bootIdx >= 0, "boot_stable present");
+  assert.strictEqual(result.meta.anchor_index, ppIdx, "anchor_index stays on persona_pinned");
+
+  assert.deepStrictEqual(result.system_blocks[ppIdx].cache_control, {
+    type: "ephemeral",
+    ttl: "5m",
+  });
+  assert.deepStrictEqual(result.system_blocks[bootIdx].cache_control, {
+    type: "ephemeral",
+    ttl: "5m",
+  });
+
+  const systemBPs = result.meta.cache_breakpoints.filter((bp) => bp.reason === "system");
+  assert.strictEqual(systemBPs.length, 2, "with boot: two system breakpoints");
+  assert.strictEqual(systemBPs[0].system_block_index, ppIdx);
+  assert.strictEqual(systemBPs[1].system_block_index, bootIdx);
+
+  for (let i = 0; i < result.system_blocks.length; i++) {
+    if (i === ppIdx || i === bootIdx) continue;
+    assert.strictEqual(
+      result.system_blocks[i].cache_control,
+      undefined,
+      `non-anchor block ${i} (${result.meta.block_ids[i]}) should not have cache_control`
+    );
+  }
+});
+
+check("boot null skips boot_stable → single system breakpoint", () => {
+  const ctx = makeBaseCtx();
+  ctx.boot = null;
+  const result = assemble(ctx);
+  assert.strictEqual(result.meta.block_ids.includes("boot_stable"), false);
+  const systemBPs = result.meta.cache_breakpoints.filter((bp) => bp.reason === "system");
+  assert.strictEqual(systemBPs.length, 1);
+  assert.strictEqual(systemBPs[0].system_block_index, result.meta.anchor_index);
+});
+
+check("boot_stable alone does not occupy anchor_index", () => {
+  const ctx = makeBaseCtx();
+  ctx.pinnedPersonaMemories = [];
+  ctx.boot = {
+    yesterday_log: { title: "昨日", summary: "只有 boot" },
+    glossary: [{ term: "Aelios", definition: "记忆系统" }],
+    precious: [],
+  };
+  const result = assemble(ctx);
+  assert.ok(!result.meta.block_ids.includes("persona_pinned"), "persona_pinned skipped");
+  assert.ok(result.meta.block_ids.includes("boot_stable"), "boot_stable present");
+  assert.strictEqual(result.meta.anchor_index, -1, "boot alone must not own anchor_index");
+  const systemBPs = result.meta.cache_breakpoints.filter((bp) => bp.reason === "system");
+  assert.strictEqual(systemBPs.length, 1);
+  assert.strictEqual(
+    result.meta.block_ids[systemBPs[0].system_block_index],
+    "boot_stable"
+  );
+});
+
+check("stable blocks come before persona_pinned; turn_context not in system_blocks", () => {
+  const ctx = makeBaseCtx();
+  ctx.ragMemories = [{ type: "note", importance: 0.8, content: "用户喜欢猫" }];
+  const result = assemble(ctx);
+
+  const ppPos = result.meta.block_ids.indexOf("persona_pinned");
+  const stableBefore = ["proxy_static_rules", "preset_lite", "client_system"];
 
   for (const id of stableBefore) {
     const pos = result.meta.block_ids.indexOf(id);
     if (pos >= 0) {
-      assert.ok(pos < csPos, `${id} should come before client_system`);
+      assert.ok(pos < ppPos, `${id} should come before persona_pinned`);
     }
   }
-  for (const id of dynamicAfter) {
+
+  for (const id of TURN_CONTEXT_BLOCK_IDS) {
     const pos = result.meta.block_ids.indexOf(id);
     if (pos >= 0) {
-      assert.ok(pos > csPos, `${id} should come after client_system`);
+      assert.ok(
+        !result.system_blocks.some((b) => b.text.includes("<memories>") || b.text.includes("<volatile_context>")),
+        `${id} must not appear in system_blocks`
+      );
     }
   }
 });
 
-check("volatile time lines move after client_system without cache_control", () => {
+check("volatile time lines move to turn_context user message before current_user", () => {
   const ctx = makeBaseCtx();
   ctx.systemMessages = [{
     role: "system",
@@ -494,12 +711,41 @@ check("volatile time lines move after client_system without cache_control", () =
   const volatileIdx = result.meta.block_ids.indexOf("client_volatile_context");
 
   assert.ok(clientIdx >= 0, "client_system should remain present");
-  assert.ok(volatileIdx > clientIdx, "volatile context should come after client_system");
+  assert.ok(volatileIdx >= 0, "volatile context block should be enabled");
   assert.ok(result.system_blocks[clientIdx].text.includes("你是稳定角色。"));
   assert.ok(!result.system_blocks[clientIdx].text.includes("2026-05-22"));
-  assert.ok(result.system_blocks[volatileIdx].text.includes("Current date: Friday, May 22, 2026"));
-  assert.ok(result.system_blocks[volatileIdx].text.includes("当前时间：2026-05-22 16:42:00"));
-  assert.strictEqual(result.system_blocks[volatileIdx].cache_control, undefined);
+
+  const turnContextMsg = result.messages[result.messages.length - 2];
+  assert.strictEqual(turnContextMsg.role, "user");
+  assert.ok(turnContextMsg.content.includes("Current date: Friday, May 22, 2026"));
+  assert.ok(turnContextMsg.content.includes("当前时间：2026-05-22 16:42:00"));
+  assert.ok(turnContextMsg.content.includes("<volatile_context>"));
+});
+
+check("volatile section headers move to turn_context message stream", () => {
+  const ctx = makeBaseCtx();
+  ctx.systemMessages = [
+    {
+      role: "system",
+      content: [
+        "稳定角色设定",
+        "【相关记忆】",
+        "这是一段客户端每轮动态注入的记忆",
+        "它不应该污染 stable system cache",
+        "",
+        "稳定补充设定",
+      ].join("\n"),
+    },
+  ];
+  const result = assemble(ctx);
+  const clientIdx = result.meta.block_ids.indexOf("client_system");
+  assert.ok(result.system_blocks[clientIdx].text.includes("稳定角色设定"));
+  assert.ok(result.system_blocks[clientIdx].text.includes("稳定补充设定"));
+  assert.ok(!result.system_blocks[clientIdx].text.includes("客户端每轮动态注入"));
+
+  const turnContextMsg = result.messages[result.messages.length - 2];
+  assert.ok(turnContextMsg.content.includes("【相关记忆】"));
+  assert.ok(turnContextMsg.content.includes("客户端每轮动态注入"));
 });
 
 check("client_system_hash ignores changing top-level time variables", () => {
@@ -522,10 +768,9 @@ check("client_system_hash ignores changing top-level time variables", () => {
     a.system_blocks[a.meta.block_ids.indexOf("client_system")].text,
     b.system_blocks[b.meta.block_ids.indexOf("client_system")].text
   );
-  assert.notStrictEqual(
-    a.system_blocks[a.meta.block_ids.indexOf("client_volatile_context")].text,
-    b.system_blocks[b.meta.block_ids.indexOf("client_volatile_context")].text
-  );
+  const aTurn = a.messages[a.messages.length - 2]?.content;
+  const bTurn = b.messages[b.messages.length - 2]?.content;
+  assert.notStrictEqual(aTurn, bTurn);
 });
 
 // ---------------------------------------------------------------------------
@@ -613,16 +858,17 @@ check("tool messages are excluded from recent_history", () => {
     );
   }
 
-  // Should have 3 history messages + 1 current_user = 4 total
-  assert.strictEqual(result.messages.length, 4);
+  // 3 history + turn_context + current_user
+  assert.strictEqual(result.messages.length, 5);
   assert.strictEqual(result.messages[0].role, "user");
   assert.strictEqual(result.messages[0].content, "查一下天气");
   assert.strictEqual(result.messages[1].role, "assistant");
   assert.strictEqual(result.messages[1].content, "好的");
   assert.strictEqual(result.messages[2].role, "assistant");
   assert.strictEqual(result.messages[2].content, "今天25度");
-  assert.strictEqual(result.messages[3].role, "user");
-  assert.strictEqual(result.messages[3].content, "今天天气怎么样？");
+  assert.ok(result.messages[3].content.includes("<memories>"));
+  assert.strictEqual(result.messages[4].role, "user");
+  assert.strictEqual(result.messages[4].content, "今天天气怎么样？");
 });
 
 check("system messages excluded from recent_history", () => {
@@ -647,9 +893,10 @@ check("all-tool history produces no recent_history messages", () => {
   ];
 
   const result = assemble(ctx);
-  // Only current_user in messages, no history
-  assert.strictEqual(result.messages.length, 1);
-  assert.strictEqual(result.messages[0].role, "user");
+  // turn_context + current_user, no history
+  assert.strictEqual(result.messages.length, 2);
+  assert.ok(result.messages[0].content.includes("<memories>"));
+  assert.strictEqual(result.messages[1].content, "今天天气怎么样？");
   assert.ok(!result.meta.block_ids.includes("recent_history"));
 });
 
@@ -671,23 +918,47 @@ function assembledToAnthropicSystem(systemBlocks) {
 }
 
 function assembledToAnthropicMessages(messages) {
-  const result = [];
-  for (const msg of messages) {
+  const wire = [];
+  const indexMap = new Map();
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     const role = msg.role;
-    const text = typeof msg.content === "string" ? msg.content
-      : msg.content == null ? ""
-      : JSON.stringify(msg.content);
-    const prev = result[result.length - 1];
+    const text =
+      typeof msg.content === "string"
+        ? msg.content
+        : msg.content == null
+          ? ""
+          : JSON.stringify(msg.content);
+    const prev = wire[wire.length - 1];
     if (prev?.role === role) {
+      const blockOffset = prev.content.length;
       prev.content.push({ type: "text", text });
+      indexMap.set(i, { wireIndex: wire.length - 1, blockOffset });
       continue;
     }
-    result.push({ role, content: [{ type: "text", text }] });
+    wire.push({ role, content: [{ type: "text", text }] });
+    indexMap.set(i, { wireIndex: wire.length - 1, blockOffset: 0 });
   }
-  if (result.length === 0) {
-    result.push({ role: "user", content: [{ type: "text", text: "" }] });
+  if (wire.length === 0) {
+    wire.push({ role: "user", content: [{ type: "text", text: "" }] });
   }
-  return result;
+  return { wire, indexMap };
+}
+
+function applyMessageCacheBreakpoints(wireMessages, breakpoints, indexMap, cacheControl) {
+  for (const bp of breakpoints) {
+    if (bp.target !== "message") continue;
+    if (bp.message_index == null) continue;
+    const mapping = indexMap.get(bp.message_index);
+    if (mapping == null) continue;
+    const msg = wireMessages[mapping.wireIndex];
+    if (!msg || msg.content.length === 0) continue;
+    const blockIdx = Math.min(mapping.blockOffset, msg.content.length - 1);
+    const block = msg.content[blockIdx];
+    if (block && block.type === "text") {
+      block.cache_control = cacheControl;
+    }
+  }
 }
 
 function assembledToOpenAISystem(systemBlocks) {
@@ -696,8 +967,51 @@ function assembledToOpenAISystem(systemBlocks) {
   return { role: "system", content: text };
 }
 
+function contentToText(content) {
+  if (typeof content === "string") return content;
+  if (content == null) return "";
+  if (!Array.isArray(content)) return "";
+  return content
+    .flatMap((part) => {
+      if (!part || typeof part !== "object" || Array.isArray(part)) return [];
+      return part.type === "text" && typeof part.text === "string" ? [part.text] : [];
+    })
+    .join("\n");
+}
+
+function mergeUserIntoPrevious(prev, content) {
+  const prevText = contentToText(prev.content);
+  const curText = contentToText(content);
+  const mergedText =
+    prevText && curText ? `${prevText}\n\n${curText}` : prevText || curText;
+  if (Array.isArray(content)) {
+    const nonText = content.filter(
+      (part) =>
+        part &&
+        typeof part === "object" &&
+        !Array.isArray(part) &&
+        part.type !== "text"
+    );
+    prev.content =
+      nonText.length > 0
+        ? [{ type: "text", text: mergedText }, ...nonText]
+        : mergedText;
+    return;
+  }
+  prev.content = mergedText;
+}
+
 function assembledToOpenAIMessages(messages) {
-  return messages.map((msg) => ({ role: msg.role, content: msg.content }));
+  const result = [];
+  for (const msg of messages) {
+    const prev = result[result.length - 1];
+    if (msg.role === "user" && prev?.role === "user") {
+      mergeUserIntoPrevious(prev, msg.content);
+      continue;
+    }
+    result.push({ role: msg.role, content: msg.content });
+  }
+  return result;
 }
 
 function assembledToOpenAIChatMessages(assembled) {
@@ -719,11 +1033,11 @@ check("system blocks preserve cache_control", () => {
   const assembled = assemble(ctx);
   const anthropicSystem = assembledToAnthropicSystem(assembled.system_blocks);
 
-  // Find the client_system block
-  const csIdx = assembled.meta.block_ids.indexOf("client_system");
-  assert.ok(csIdx >= 0);
+  // Find the persona_pinned block (cache anchor)
+  const ppIdx = assembled.meta.block_ids.indexOf("persona_pinned");
+  assert.ok(ppIdx >= 0);
 
-  const block = anthropicSystem[csIdx];
+  const block = anthropicSystem[ppIdx];
   assert.strictEqual(block.type, "text");
   assert.deepStrictEqual(block.cache_control, { type: "ephemeral", ttl: "5m" });
 });
@@ -732,9 +1046,14 @@ check("non-anchor blocks have no cache_control", () => {
   const ctx = makeBaseCtx();
   const assembled = assemble(ctx);
   const anthropicSystem = assembledToAnthropicSystem(assembled.system_blocks);
+  const anchorIndexes = new Set(
+    assembled.meta.cache_breakpoints
+      .filter((bp) => bp.reason === "system")
+      .map((bp) => bp.system_block_index)
+  );
 
   for (let i = 0; i < anthropicSystem.length; i++) {
-    if (i === assembled.meta.anchor_index) continue;
+    if (anchorIndexes.has(i)) continue;
     assert.strictEqual(
       anthropicSystem[i].cache_control,
       undefined,
@@ -746,14 +1065,13 @@ check("non-anchor blocks have no cache_control", () => {
 check("anthropic messages convert user/assistant correctly", () => {
   const ctx = makeBaseCtx();
   const assembled = assemble(ctx);
-  const anthropicMsgs = assembledToAnthropicMessages(assembled.messages);
+  const { wire: anthropicMsgs } = assembledToAnthropicMessages(assembled.messages);
 
-  // Should have at least 2 messages (history + current_user)
   assert.ok(anthropicMsgs.length >= 2);
-  // Last should be the current user message
   const last = anthropicMsgs[anthropicMsgs.length - 1];
   assert.strictEqual(last.role, "user");
-  assert.strictEqual(last.content[0].text, "今天天气怎么样？");
+  assert.ok(last.content[0].text.includes("<memories>"));
+  assert.strictEqual(last.content[last.content.length - 1].text, "今天天气怎么样？");
 });
 
 check("anthropic stringifies structured content for image", () => {
@@ -766,16 +1084,45 @@ check("anthropic stringifies structured content for image", () => {
     ],
   };
   const assembled = assemble(ctx);
-  const anthropicMsgs = assembledToAnthropicMessages(assembled.messages);
+  const { wire: anthropicMsgs } = assembledToAnthropicMessages(assembled.messages);
   const last = anthropicMsgs[anthropicMsgs.length - 1];
 
   assert.strictEqual(last.role, "user");
-  assert.strictEqual(last.content.length, 1);
-  assert.strictEqual(last.content[0].type, "text");
-  // Should be JSON-stringified since it's structured content
-  const parsed = JSON.parse(last.content[0].text);
+  assert.strictEqual(last.content.length, 2);
+  assert.ok(last.content[0].text.includes("<memories>"));
+  const parsed = JSON.parse(last.content[1].text);
   assert.strictEqual(parsed.length, 2);
   assert.strictEqual(parsed[1].type, "image_url");
+});
+
+check("anthropic wire mapping: tail breakpoint lands on merged wire block", () => {
+  const ctx = makeBaseCtx();
+  ctx.historyMessages = [
+    { role: "user", content: "first" },
+    { role: "user", content: "second" },
+    { role: "assistant", content: "reply" },
+  ];
+  const assembled = assemble(ctx);
+  const { wire, indexMap } = assembledToAnthropicMessages(assembled.messages);
+  const tailBP = assembled.meta.cache_breakpoints.find((bp) => bp.reason === "tail");
+  assert.ok(tailBP);
+  const mapping = indexMap.get(tailBP.message_index);
+  assert.ok(mapping);
+  const cc = { type: "ephemeral", ttl: "5m" };
+  applyMessageCacheBreakpoints(wire, assembled.meta.cache_breakpoints, indexMap, cc);
+  const target = wire[mapping.wireIndex].content[mapping.blockOffset];
+  assert.ok(target.cache_control, "breakpoint on wire block ending original message");
+  const mergedUser = wire.find((m) => m.role === "user" && m.content.length === 2);
+  assert.ok(mergedUser, "consecutive user history merged on wire");
+  assert.strictEqual(mergedUser.content[1].cache_control, undefined);
+});
+
+check("turn_context skipped when no current_user message", () => {
+  const ctx = makeBaseCtx();
+  ctx.currentUserMessage = null;
+  const assembled = assemble(ctx);
+  assert.ok(!assembled.messages.some((m) => m.content.includes("<memories>")));
+  assert.ok(!assembled.meta.block_ids.includes("dynamic_memory_patch"));
 });
 
 // ---------------------------------------------------------------------------
@@ -829,7 +1176,10 @@ check("openai combined starts with system, then conversation", () => {
   const nonSystem = openaiMsgs.filter((m) => m.role !== "system");
   assert.ok(nonSystem.length >= 2);
   assert.strictEqual(nonSystem[nonSystem.length - 1].role, "user");
-  assert.strictEqual(nonSystem[nonSystem.length - 1].content, "今天天气怎么样？");
+  const lastContent = nonSystem[nonSystem.length - 1].content;
+  assert.ok(typeof lastContent === "string");
+  assert.ok(lastContent.includes("<memories>"));
+  assert.ok(lastContent.endsWith("今天天气怎么样？"));
 });
 
 check("openai empty system_blocks produces no system message", () => {
@@ -851,6 +1201,60 @@ check("cache_control never leaks into openai output", () => {
   for (const msg of openaiMsgs) {
     assert.strictEqual(msg.cache_control, undefined);
   }
+});
+
+check("openai merges consecutive user messages (turn_context + current_user)", () => {
+  const ctx = makeBaseCtx();
+  const assembled = assemble(ctx);
+  const openaiMsgs = assembledToOpenAIChatMessages(assembled);
+  const userMsgs = openaiMsgs.filter((m) => m.role === "user");
+  assert.strictEqual(userMsgs.length, 2, "history user + merged turn");
+  const merged = userMsgs[userMsgs.length - 1];
+  assert.ok(typeof merged.content === "string");
+  assert.ok(merged.content.includes("<memories>"));
+  assert.ok(merged.content.endsWith("今天天气怎么样？"));
+});
+
+function injectMemoryPatchAsSystemMessage(messages, patch) {
+  const trimmed = patch.trim();
+  if (!trimmed) return messages;
+  let insertAt = 0;
+  while (insertAt < messages.length && messages[insertAt].role === "system") {
+    insertAt += 1;
+  }
+  return [
+    ...messages.slice(0, insertAt),
+    { role: "system", content: trimmed },
+    ...messages.slice(insertAt),
+  ];
+}
+
+function injectMemoryPatchBeforeCurrentUser(messages, patch) {
+  const trimmed = patch.trim();
+  if (!trimmed) return messages;
+  const lastMessage = messages[messages.length - 1];
+  if (!lastMessage || lastMessage.role !== "user") {
+    return injectMemoryPatchAsSystemMessage(messages, trimmed);
+  }
+  return [
+    ...messages.slice(0, messages.length - 1),
+    { role: "user", content: trimmed },
+    lastMessage,
+  ];
+}
+
+check("injectMemoryPatchBeforeCurrentUser falls back on tool-round tail", () => {
+  const messages = [
+    { role: "user", content: "查天气" },
+    { role: "assistant", content: null, tool_calls: [{ id: "tc1", type: "function", function: { name: "get_weather", arguments: "{}" } }] },
+    { role: "tool", content: '{"temp":25}', tool_call_id: "tc1" },
+  ];
+  const patch = "<memories>- [note] likes rain</memories>";
+  const result = injectMemoryPatchBeforeCurrentUser(messages, patch);
+  assert.strictEqual(result.length, 4);
+  assert.strictEqual(result[0].role, "system");
+  assert.ok(result[0].content.includes("<memories>"));
+  assert.strictEqual(result[1].role, "user");
 });
 
 // ---------------------------------------------------------------------------
@@ -982,16 +1386,18 @@ check("assembler output for image request preserves image_url", () => {
 // ---------------------------------------------------------------------------
 
 function applyCacheOverrides(systemBlocks, env) {
-  const anchor = systemBlocks.find((b) => b.cache_control);
-  if (!anchor) return;
+  const anchors = systemBlocks.filter((b) => b.cache_control);
+  if (anchors.length === 0) return;
 
   if (env.ANTHROPIC_CACHE_ENABLED === "false") {
-    delete anchor.cache_control;
+    for (const anchor of anchors) delete anchor.cache_control;
     return;
   }
 
   const ttl = env.ANTHROPIC_CACHE_TTL === "1h" ? "1h" : "5m";
-  anchor.cache_control = { type: "ephemeral", ttl };
+  for (const anchor of anchors) {
+    anchor.cache_control = { type: "ephemeral", ttl };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,12 +1406,12 @@ function applyCacheOverrides(systemBlocks, env) {
 
 console.log("\n--- Test 9: Anthropic path ---");
 
-check("cache_control on client_system block only", () => {
+check("cache_control on persona_pinned block only (no boot)", () => {
   const ctx = makeBaseCtx();
   const assembled = assemble(ctx);
   const anthropicSystem = assembledToAnthropicSystem(assembled.system_blocks);
 
-  // Exactly one block should have cache_control
+  // Without boot: exactly one block should have cache_control
   const withCache = anthropicSystem.filter((b) => b.cache_control);
   assert.strictEqual(withCache.length, 1);
 
@@ -1015,7 +1421,27 @@ check("cache_control on client_system block only", () => {
   assert.strictEqual(anchorBlock.cache_control.type, "ephemeral");
 });
 
-check("dynamic memory block after client_system has no cache_control", () => {
+check("cache_control on persona_pinned and boot_stable when boot present", () => {
+  const ctx = makeBaseCtx();
+  ctx.boot = {
+    yesterday_log: { title: "昨日", summary: "聊了缓存" },
+    glossary: [{ term: "Aelios", definition: "记忆系统" }],
+    precious: [],
+  };
+  const assembled = assemble(ctx);
+  const anthropicSystem = assembledToAnthropicSystem(assembled.system_blocks);
+
+  const withCache = anthropicSystem.filter((b) => b.cache_control);
+  assert.strictEqual(withCache.length, 2);
+
+  const ppIdx = assembled.meta.block_ids.indexOf("persona_pinned");
+  const bootIdx = assembled.meta.block_ids.indexOf("boot_stable");
+  assert.ok(anthropicSystem[ppIdx].cache_control);
+  assert.ok(anthropicSystem[bootIdx].cache_control);
+  assert.strictEqual(assembled.meta.anchor_index, ppIdx);
+});
+
+check("dynamic memory patch is in turn_context message, not system blocks", () => {
   const ctx = makeBaseCtx();
   ctx.ragMemories = [
     { type: "note", importance: 0.8, content: "用户喜欢猫" },
@@ -1024,11 +1450,16 @@ check("dynamic memory block after client_system has no cache_control", () => {
   const assembled = assemble(ctx);
   const anthropicSystem = assembledToAnthropicSystem(assembled.system_blocks);
 
-  // Find dynamic_memory_patch block
   const dmIdx = assembled.meta.block_ids.indexOf("dynamic_memory_patch");
   assert.ok(dmIdx >= 0, "dynamic_memory_patch should be present");
-  // It should NOT have cache_control
-  assert.strictEqual(anthropicSystem[dmIdx].cache_control, undefined);
+  assert.ok(
+    !anthropicSystem.some((b) => b.text.includes("<memories>")),
+    "memories must not be in system blocks"
+  );
+
+  const turnContextMsg = assembled.messages[assembled.messages.length - 2];
+  assert.ok(turnContextMsg.content.includes("<memories>"));
+  assert.ok(turnContextMsg.content.includes("用户喜欢猫"));
 });
 
 check("plain user/assistant messages order preserved through Anthropic conversion", () => {
@@ -1042,20 +1473,17 @@ check("plain user/assistant messages order preserved through Anthropic conversio
   ctx.currentUserMessage = { role: "user", content: "第三条" };
 
   const assembled = assemble(ctx);
-  const anthropicMsgs = assembledToAnthropicMessages(assembled.messages);
+  const { wire: anthropicMsgs } = assembledToAnthropicMessages(assembled.messages);
 
-  // Should be: user, assistant, user, assistant, user (current)
   assert.strictEqual(anthropicMsgs.length, 5);
-  assert.strictEqual(anthropicMsgs[0].role, "user");
   assert.strictEqual(anthropicMsgs[0].content[0].text, "第一条");
-  assert.strictEqual(anthropicMsgs[1].role, "assistant");
   assert.strictEqual(anthropicMsgs[1].content[0].text, "回复第一条");
-  assert.strictEqual(anthropicMsgs[2].role, "user");
   assert.strictEqual(anthropicMsgs[2].content[0].text, "第二条");
-  assert.strictEqual(anthropicMsgs[3].role, "assistant");
   assert.strictEqual(anthropicMsgs[3].content[0].text, "回复第二条");
-  assert.strictEqual(anthropicMsgs[4].role, "user");
-  assert.strictEqual(anthropicMsgs[4].content[0].text, "第三条");
+  const last = anthropicMsgs[anthropicMsgs.length - 1];
+  assert.strictEqual(last.role, "user");
+  assert.ok(last.content[0].text.includes("<memories>"));
+  assert.strictEqual(last.content[last.content.length - 1].text, "第三条");
 });
 
 check("tool/tool_calls request → hasToolContent=true (fallback for both paths)", () => {
@@ -1081,14 +1509,13 @@ check("structured content (image_url) goes through JSON.stringify fallback in An
     ],
   };
   const assembled = assemble(ctx);
-  const anthropicMsgs = assembledToAnthropicMessages(assembled.messages);
+  const { wire: anthropicMsgs } = assembledToAnthropicMessages(assembled.messages);
   const last = anthropicMsgs[anthropicMsgs.length - 1];
 
   assert.strictEqual(last.role, "user");
-  assert.strictEqual(last.content.length, 1);
-  assert.strictEqual(last.content[0].type, "text");
-  // JSON.stringify fallback — structured content is stringified, not lost
-  const parsed = JSON.parse(last.content[0].text);
+  assert.strictEqual(last.content.length, 2);
+  assert.ok(last.content[0].text.includes("<memories>"));
+  const parsed = JSON.parse(last.content[1].text);
   assert.ok(Array.isArray(parsed));
   assert.strictEqual(parsed.length, 2);
   assert.strictEqual(parsed[0].type, "text");
@@ -1150,22 +1577,19 @@ check("Anthropic path: full pipeline produces valid system + messages", () => {
   const systemBlocks = assembledToAnthropicSystem(assembled.system_blocks);
   applyCacheOverrides(systemBlocks, {});
 
-  // Should have: proxy_static_rules, persona_pinned(skip),
-  //              preset_lite, client_system, dynamic_memory_patch
   assert.ok(systemBlocks.length >= 3);
-  // First block text should contain proxy rules
   assert.ok(systemBlocks[0].text.includes("前端提供的角色"));
-  // Cache anchor present
   const anchor = systemBlocks.find((b) => b.cache_control);
   assert.ok(anchor);
-  assert.ok(anchor.text.includes("咲咲的伴侣"));
+  assert.ok(anchor.text.includes("性格温柔") || anchor.text.includes("名字是咲咲"));
+  assert.ok(!systemBlocks.some((b) => b.text.includes("<memories>")));
 
-  // Messages
-  const messages = assembledToAnthropicMessages(assembled.messages);
+  const { wire: messages } = assembledToAnthropicMessages(assembled.messages);
   assert.ok(messages.length >= 1);
   const last = messages[messages.length - 1];
   assert.strictEqual(last.role, "user");
-  assert.strictEqual(last.content[0].text, "今天天气怎么样？");
+  assert.ok(last.content[0].text.includes("<memories>"));
+  assert.strictEqual(last.content[last.content.length - 1].text, "今天天气怎么样？");
 });
 
 // ---------------------------------------------------------------------------
@@ -1442,70 +1866,59 @@ function getRollingCacheWindowSize(env) {
   return Math.max(Math.floor(value), 1);
 }
 
-function applyRollingMessageCache(messages, env) {
+function applyRollingMessageCache(messages, env, systemBlocks = []) {
   const cacheControl = buildCacheControl(env);
   if (!cacheControl) return;
-  if (env.ANTHROPIC_ROLLING_CACHE_ENABLED === "false") return;
+  if (env.ANTHROPIC_ROLLING_CACHE_ENABLED !== "true") return;
 
+  const systemCacheCount = systemBlocks.filter((block) => block.cache_control).length;
+  // Keep total cache_control markers ≤ 4 (system anchors + message markers).
+  const maxMessageMarkers = Math.max(1, 4 - systemCacheCount);
+  const userIndices = [];
   const isFullWindow = messages.length >= getRollingCacheWindowSize(env);
-  const start = isFullWindow ? 0 : messages.length - 1;
-  const end = isFullWindow ? messages.length : -1;
-  const step = isFullWindow ? 1 : -1;
-
-  for (let i = start; i !== end; i += step) {
-    const message = messages[i];
-    if (message.role !== "user" || message.content.length === 0) continue;
-    message.content[message.content.length - 1].cache_control = cacheControl;
-    return;
+  const start = isFullWindow ? 0 : Math.max(0, messages.length - 1);
+  for (let i = start; i < messages.length; i += 1) {
+    if (messages[i].role === "user" && messages[i].content.length > 0) userIndices.push(i);
   }
-}
+  if (userIndices.length === 0) return;
 
-function appendUncachedUserContext(messages, text) {
-  const trimmed = text?.trim();
-  if (!trimmed) return;
+  const last = userIndices[userIndices.length - 1];
+  messages[last].content[messages[last].content.length - 1].cache_control = cacheControl;
 
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (message.role !== "user") continue;
-    message.content.push({ type: "text", text: trimmed });
-    return;
+  const remaining = Math.min(userIndices.length - 1, maxMessageMarkers - 1);
+  for (let marker = 0; marker < remaining; marker += 1) {
+    const idx = userIndices[Math.floor(marker * (userIndices.length - 1) / remaining)];
+    messages[idx].content[messages[idx].content.length - 1].cache_control = cacheControl;
   }
-
-  messages.push({ role: "user", content: [{ type: "text", text: trimmed }] });
-}
-
-function splitDynamicMemorySystemBlock(assembled) {
-  const idx = assembled.meta.block_ids.indexOf("dynamic_memory_patch");
-  if (idx < 0 || idx >= assembled.system_blocks.length) {
-    return { systemBlocks: assembled.system_blocks, dynamicMemoryPatch: null };
-  }
-
-  return {
-    systemBlocks: [
-      ...assembled.system_blocks.slice(0, idx),
-      ...assembled.system_blocks.slice(idx + 1),
-    ],
-    dynamicMemoryPatch: assembled.system_blocks[idx].text,
-  };
 }
 
 function buildAnthropicRequestFromAssembled(req, targetModel, assembled, env) {
   const thinking = buildThinkingConfig(env, req);
-  const { systemBlocks, dynamicMemoryPatch } = splitDynamicMemorySystemBlock(assembled);
-  const system = assembledToAnthropicSystem(systemBlocks);
+  const system = assembledToAnthropicSystem(assembled.system_blocks);
   applyCacheOverrides(system, env);
-  const messages = assembledToAnthropicMessages(assembled.messages);
-  applyRollingMessageCache(messages, env);
-  appendUncachedUserContext(messages, dynamicMemoryPatch);
+  const { wire: messages, indexMap } = assembledToAnthropicMessages(assembled.messages);
+  const cc = buildCacheControl(env);
+  if (cc) {
+    applyMessageCacheBreakpoints(
+      messages,
+      assembled.meta.cache_breakpoints,
+      indexMap,
+      cc
+    );
+  }
+  if (env.ANTHROPIC_ROLLING_CACHE_ENABLED === "true") {
+    applyRollingMessageCache(messages, env, system);
+  }
   return {
     model: targetModel.replace(/^anthropic\//i, ""),
     max_tokens: getAnthropicMaxTokens(req, env),
-    cache_control: buildAutomaticCacheControl(env),
+    // No top-level cache_control (was competing with explicit breakpoints)
     temperature: thinking ? undefined : typeof req.temperature === "number" ? req.temperature : undefined,
     stream: Boolean(req.stream),
     thinking,
     system,
     messages,
+    ...(env.ANTHROPIC_CACHE_USER_ID ? { metadata: { user_id: env.ANTHROPIC_CACHE_USER_ID } } : {}),
   };
 }
 
@@ -1566,7 +1979,7 @@ check("OpenAI helper: strips Claude native thinking but keeps reasoning_effort",
   assert.strictEqual(req.reasoning_effort, "high");
 });
 
-check("Anthropic helper: system cache_control stays on client_system", () => {
+check("Anthropic helper: system cache_control on persona_pinned", () => {
   const ctx = makeBaseCtx();
   ctx.systemMessages = [{ role: "system", content: "角色卡" }];
   ctx.ragMemories = [{ type: "note", importance: 0.7, content: "喜欢猫" }];
@@ -1579,10 +1992,11 @@ check("Anthropic helper: system cache_control stays on client_system", () => {
   );
   const withCache = req.system.filter((b) => b.cache_control);
   assert.strictEqual(withCache.length, 1);
-  assert.ok(withCache[0].text.includes("角色卡"));
+  // Cache is on persona_pinned (last block of the four-block prefix)
+  assert.ok(withCache[0].text.includes("性格温柔") || withCache[0].text.includes("名字是咲咲"));
 });
 
-check("Anthropic helper: rolling cache_control lands on latest user message", () => {
+check("Anthropic helper: no top-level cache_control by default", () => {
   const ctx = makeBaseCtx();
   const assembled = assemble(ctx);
   const req = buildAnthropicRequestFromAssembled(
@@ -1591,11 +2005,10 @@ check("Anthropic helper: rolling cache_control lands on latest user message", ()
     assembled,
     {}
   );
-  const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
-  assert.deepStrictEqual(lastUser.content[0].cache_control, { type: "ephemeral" });
+  assert.strictEqual(req.cache_control, undefined);
 });
 
-check("Anthropic helper: full rolling window restarts cache on first user message", () => {
+check("Anthropic helper: full rolling window caches latest user and earlier bridge user (opt-in)", () => {
   const ctx = makeBaseCtx();
   ctx.historyMessages = [
     { role: "assistant", content: "窗口前的助手消息" },
@@ -1608,20 +2021,43 @@ check("Anthropic helper: full rolling window restarts cache on first user messag
     { messages: [] },
     "anthropic/claude-sonnet-4-6",
     assembled,
-    { ANTHROPIC_ROLLING_CACHE_WINDOW_SIZE: "4" }
+    { ANTHROPIC_ROLLING_CACHE_ENABLED: "true", ANTHROPIC_ROLLING_CACHE_WINDOW_SIZE: "4" }
   );
 
   const firstUser = req.messages.find((m) => m.role === "user");
   const firstUserBlock = firstUser.content[firstUser.content.length - 1];
   const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
-  const lastUserBlock = lastUser.content[lastUser.content.length - 1];
+  const lastUserOriginalBlock = lastUser.content[0];
+  const lastUserAppendedBlock = lastUser.content[lastUser.content.length - 1];
 
   assert.strictEqual(firstUser.content[0].text, "窗口第一条用户消息");
   assert.deepStrictEqual(firstUserBlock.cache_control, { type: "ephemeral" });
-  assert.strictEqual(lastUserBlock.cache_control, undefined);
+  assert.ok(lastUserOriginalBlock.text.includes("<memories>"));
+  assert.strictEqual(lastUserOriginalBlock.cache_control, undefined);
+  assert.strictEqual(lastUserAppendedBlock.text, "窗口最新用户消息");
+  assert.deepStrictEqual(lastUserAppendedBlock.cache_control, { type: "ephemeral" });
 });
 
-check("Anthropic helper: dynamic memory is appended after rolling cache point", () => {
+check("Anthropic helper: metadata.user_id comes from env only", () => {
+  const ctx = makeBaseCtx();
+  const assembled = assemble(ctx);
+  const withoutUser = buildAnthropicRequestFromAssembled(
+    { messages: [] },
+    "anthropic/claude-sonnet-4-6",
+    assembled,
+    {}
+  );
+  const withUser = buildAnthropicRequestFromAssembled(
+    { messages: [] },
+    "anthropic/claude-sonnet-4-6",
+    assembled,
+    { ANTHROPIC_CACHE_USER_ID: "aelios-user" }
+  );
+  assert.strictEqual(withoutUser.metadata, undefined);
+  assert.deepStrictEqual(withUser.metadata, { user_id: "aelios-user" });
+});
+
+check("Anthropic helper: dynamic memory is turn_context before current user", () => {
   const ctx = makeBaseCtx();
   ctx.ragMemories = [
     { type: "note", importance: 0.8, content: "用户喜欢缓存命中率高一点" },
@@ -1637,12 +2073,14 @@ check("Anthropic helper: dynamic memory is appended after rolling cache point", 
 
   assert.ok(!req.system.some((b) => b.text.includes("用户喜欢缓存命中率高一点")));
 
+  const turnContext = assembled.messages[assembled.messages.length - 2];
+  assert.ok(turnContext.content.includes("用户喜欢缓存命中率高一点"));
+
   const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
   assert.ok(lastUser);
-  assert.strictEqual(lastUser.content[0].text, "继续优化缓存");
-  assert.deepStrictEqual(lastUser.content[0].cache_control, { type: "ephemeral" });
-  assert.ok(lastUser.content[1].text.includes("用户喜欢缓存命中率高一点"));
-  assert.strictEqual(lastUser.content[1].cache_control, undefined);
+  assert.ok(lastUser.content[0].text.includes("用户喜欢缓存命中率高一点"));
+  assert.strictEqual(lastUser.content[lastUser.content.length - 1].text, "继续优化缓存");
+  assert.strictEqual(lastUser.content[0].cache_control, undefined);
 });
 
 check("Anthropic helper: ANTHROPIC_CACHE_ENABLED=false removes cache_control", () => {
@@ -1663,7 +2101,7 @@ check("Anthropic helper: ANTHROPIC_CACHE_ENABLED=false removes cache_control", (
   assert.strictEqual(userBlocksWithCache.length, 0);
 });
 
-check("Anthropic helper: ANTHROPIC_CACHE_TTL=1h sets ttl=1h", () => {
+check("Anthropic helper: ANTHROPIC_CACHE_TTL=1h sets ttl=1h on system anchor", () => {
   const ctx = makeBaseCtx();
   const assembled = assemble(ctx);
   const req = buildAnthropicRequestFromAssembled(
@@ -1675,11 +2113,18 @@ check("Anthropic helper: ANTHROPIC_CACHE_TTL=1h sets ttl=1h", () => {
   const anchor = req.system.find((b) => b.cache_control);
   assert.ok(anchor);
   assert.deepStrictEqual(anchor.cache_control, { type: "ephemeral", ttl: "1h" });
+  const cachedBlocks = req.messages
+    .flatMap((m) => m.content)
+    .filter((b) => b.cache_control);
+  assert.strictEqual(cachedBlocks.length, 1, "tail breakpoint on history only");
   const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
-  assert.deepStrictEqual(lastUser.content[0].cache_control, { type: "ephemeral", ttl: "1h" });
+  assert.ok(lastUser);
+  for (const block of lastUser.content) {
+    assert.strictEqual(block.cache_control, undefined, "turn_context/current_user uncached");
+  }
 });
 
-check("Anthropic helper: defaults to stable system plus rolling cache", () => {
+check("Anthropic helper: defaults to system anchor only (no rolling, no auto)", () => {
   const ctx = makeBaseCtx();
   const assembled = assemble(ctx);
   const req = buildAnthropicRequestFromAssembled(
@@ -1692,22 +2137,29 @@ check("Anthropic helper: defaults to stable system plus rolling cache", () => {
   assert.ok(anchor);
   assert.deepStrictEqual(anchor.cache_control, { type: "ephemeral", ttl: "5m" });
   assert.strictEqual(req.cache_control, undefined);
-  const userBlocksWithCache = req.messages
+  const cachedBlocks = req.messages
     .flatMap((m) => m.content)
     .filter((b) => b.cache_control);
-  assert.strictEqual(userBlocksWithCache.length, 1);
+  assert.strictEqual(cachedBlocks.length, 1, "tail breakpoint on history only");
+  const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
+  assert.ok(lastUser);
+  for (const block of lastUser.content) {
+    assert.strictEqual(block.cache_control, undefined, "turn_context/current_user uncached");
+  }
 });
 
-check("Anthropic helper: automatic cache is opt-in", () => {
+check("Anthropic helper: no top-level automatic cache_control", () => {
   const ctx = makeBaseCtx();
   const assembled = assemble(ctx);
+  // Even with ANTHROPIC_AUTO_CACHE_ENABLED=true, top-level cache_control
+  // is not set — it was competing with explicit breakpoints.
   const req = buildAnthropicRequestFromAssembled(
     { messages: [] },
     "anthropic/claude-sonnet-4-6",
     assembled,
     { ANTHROPIC_AUTO_CACHE_ENABLED: "true" }
   );
-  assert.deepStrictEqual(req.cache_control, { type: "ephemeral" });
+  assert.strictEqual(req.cache_control, undefined);
 });
 
 check("Anthropic helper: structured content stringified (temporary fallback)", () => {
@@ -1729,11 +2181,10 @@ check("Anthropic helper: structured content stringified (temporary fallback)", (
   const last = req.messages[req.messages.length - 1];
   assert.strictEqual(last.role, "user");
   assert.strictEqual(last.content.length, 2);
-  assert.strictEqual(last.content[0].type, "text");
-  const parsed = JSON.parse(last.content[0].text);
+  assert.ok(last.content[0].text.includes("<memories>"));
+  const parsed = JSON.parse(last.content[1].text);
   assert.strictEqual(parsed[1].type, "image_url");
-  assert.ok(last.content[1].text.includes("<memories>"));
-  assert.strictEqual(last.content[1].cache_control, undefined);
+  assert.strictEqual(last.content[0].cache_control, undefined);
 });
 
 check("Anthropic helper: model prefix stripped", () => {
@@ -1807,7 +2258,7 @@ check("no system messages → client_system_hash is sentinel", () => {
   }
 });
 
-check("Anthropic assembler path: cacheAnchorBlock = 'client_system' when anchor_index >= 0", () => {
+check("Anthropic assembler path: cacheAnchorBlock = 'persona_pinned' when anchor_index >= 0", () => {
   // Simulates chatCompletions.ts Anthropic assembler branch
   const ctx = makeBaseCtx();
   ctx.systemMessages = [{ role: "system", content: "角色卡" }];
@@ -1815,21 +2266,22 @@ check("Anthropic assembler path: cacheAnchorBlock = 'client_system' when anchor_
 
   // chatCompletions.ts sets these when using assembler:
   const clientSystemHash = assembled.meta.client_system_hash;
-  const cacheAnchorBlock = assembled.meta.anchor_index >= 0 ? "client_system" : null;
+  const cacheAnchorBlock = assembled.meta.anchor_index >= 0 ? "persona_pinned" : null;
 
   assert.ok(clientSystemHash.length > 0);
-  assert.ok(assembled.meta.anchor_index >= 0, "anchor_index should be >= 0 with system messages");
-  assert.strictEqual(cacheAnchorBlock, "client_system");
+  assert.ok(assembled.meta.anchor_index >= 0, "anchor_index should be >= 0 with pinned persona");
+  assert.strictEqual(cacheAnchorBlock, "persona_pinned");
 });
 
 check("Anthropic assembler path: cacheAnchorBlock = null when anchor_index < 0", () => {
-  // When no system messages exist, anchor_index is -1
+  // When no system messages AND no pinned persona exist, anchor_index is -1
   const ctx = makeBaseCtx();
   ctx.systemMessages = [];
+  ctx.pinnedPersonaMemories = [];
   const assembled = assemble(ctx);
 
   const clientSystemHash = assembled.meta.client_system_hash;
-  const cacheAnchorBlock = assembled.meta.anchor_index >= 0 ? "client_system" : null;
+  const cacheAnchorBlock = assembled.meta.anchor_index >= 0 ? "persona_pinned" : null;
 
   assert.strictEqual(assembled.meta.anchor_index, -1);
   assert.strictEqual(cacheAnchorBlock, null);
@@ -2349,7 +2801,7 @@ const IDEMPOTENCY_KEYS_RETENTION_DAYS = 7;
 const MEMORY_ACTIVE_EXPIRY_DAYS = 180;
 const MEMORY_HARD_DELETE_DAYS = 30;
 const THROTTLE_HOURS = 24;
-const RETENTION_BATCH_SIZE = 100;
+const RETENTION_BATCH_SIZE = 90;
 
 function daysAgo(days) {
   return new Date(Date.now() - days * 86_400_000).toISOString();
@@ -2588,7 +3040,7 @@ check("retention constants are correct", () => {
   assert.strictEqual(MEMORY_ACTIVE_EXPIRY_DAYS, 180);
   assert.strictEqual(MEMORY_HARD_DELETE_DAYS, 30);
   assert.strictEqual(THROTTLE_HOURS, 24);
-  assert.strictEqual(RETENTION_BATCH_SIZE, 100);
+  assert.strictEqual(RETENTION_BATCH_SIZE, 90);
 });
 
 check("full lifecycle: active → expired → hard-deletable chain", () => {
@@ -2754,40 +3206,40 @@ check("legacy fallback: mixed — active D1 returns as d1Record, expired blocks 
 
 // --- Batch processing ---
 
-check("batch: RETENTION_BATCH_SIZE is 100", () => {
-  assert.strictEqual(RETENTION_BATCH_SIZE, 100);
+check("batch: RETENTION_BATCH_SIZE is 90", () => {
+  assert.strictEqual(RETENTION_BATCH_SIZE, 90);
 });
 
-check("batch: 250 ids split into 3 batches (100+100+50)", () => {
+check("batch: 250 ids split into 3 batches (90+90+70)", () => {
   const ids = Array.from({ length: 250 }, (_, i) => `id_${i}`);
   const batches = [];
   for (let i = 0; i < ids.length; i += RETENTION_BATCH_SIZE) {
     batches.push(ids.slice(i, i + RETENTION_BATCH_SIZE));
   }
   assert.strictEqual(batches.length, 3);
-  assert.strictEqual(batches[0].length, 100);
-  assert.strictEqual(batches[1].length, 100);
-  assert.strictEqual(batches[2].length, 50);
+  assert.strictEqual(batches[0].length, 90);
+  assert.strictEqual(batches[1].length, 90);
+  assert.strictEqual(batches[2].length, 70);
 });
 
-check("batch: 100 ids fit in exactly 1 batch", () => {
-  const ids = Array.from({ length: 100 }, (_, i) => `id_${i}`);
+check("batch: 90 ids fit in exactly 1 batch", () => {
+  const ids = Array.from({ length: 90 }, (_, i) => `id_${i}`);
   const batches = [];
   for (let i = 0; i < ids.length; i += RETENTION_BATCH_SIZE) {
     batches.push(ids.slice(i, i + RETENTION_BATCH_SIZE));
   }
   assert.strictEqual(batches.length, 1);
-  assert.strictEqual(batches[0].length, 100);
+  assert.strictEqual(batches[0].length, 90);
 });
 
-check("batch: 101 ids split into 2 batches (100+1)", () => {
-  const ids = Array.from({ length: 101 }, (_, i) => `id_${i}`);
+check("batch: 91 ids split into 2 batches (90+1)", () => {
+  const ids = Array.from({ length: 91 }, (_, i) => `id_${i}`);
   const batches = [];
   for (let i = 0; i < ids.length; i += RETENTION_BATCH_SIZE) {
     batches.push(ids.slice(i, i + RETENTION_BATCH_SIZE));
   }
   assert.strictEqual(batches.length, 2);
-  assert.strictEqual(batches[0].length, 100);
+  assert.strictEqual(batches[0].length, 90);
   assert.strictEqual(batches[1].length, 1);
 });
 
@@ -2802,9 +3254,17 @@ check("batch: empty ids produce 0 batches", () => {
 
 check("batch: stats accumulate across batches", () => {
   // Simulates: each batch returns a count, stats sum them
-  const batchResults = [100, 100, 50];
+  const batchResults = [90, 90, 70];
   const total = batchResults.reduce((sum, n) => sum + n, 0);
   assert.strictEqual(total, 250);
+});
+
+check("batch: D1 bind limit — IN clause + 1 leading param stays <= 100", () => {
+  // D1 limits each statement to 100 bound variables. Queries like
+  //   DELETE FROM memories WHERE namespace = ? AND id IN (?, ?, ...)
+  // bind 1 leading param + N ids. The batch size must keep 1 + N <= 100.
+  assert.ok(RETENTION_BATCH_SIZE + 1 <= 100, "RETENTION_BATCH_SIZE must leave room for the leading namespace param");
+  assert.ok(RETENTION_BATCH_SIZE <= 99, "RETENTION_BATCH_SIZE must be <= 99 to stay under D1's 100-variable limit");
 });
 
 check("batch: expireOldMemories returns expired refs with vector_ids", () => {
@@ -2833,8 +3293,8 @@ check("batch: Vectorize deleteByIds should be batched like hardDeleteMemories", 
     batches.push(vectorIds.slice(i, i + RETENTION_BATCH_SIZE));
   }
   assert.strictEqual(batches.length, 2);
-  assert.strictEqual(batches[0].length, 100);
-  assert.strictEqual(batches[1].length, 50);
+  assert.strictEqual(batches[0].length, 90);
+  assert.strictEqual(batches[1].length, 60);
 });
 
 // ---------------------------------------------------------------------------

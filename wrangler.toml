@@ -3,6 +3,21 @@ main = "src/index.ts"
 compatibility_date = "2026-04-01"
 keep_vars = true
 
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
+
 [triggers]
 # Cloudflare cron uses UTC. 20:10 UTC is 04:10 in Singapore/China time.
 crons = ["10 20 * * *"]
@@ -15,29 +30,27 @@ binding = "AI"
 # up in Cloudflare Variables and can be changed without touching code.
 PUBLIC_MODEL_NAME = "companion"
 CHAT_MODEL = "deepseek/deepseek-v4-pro"
-MEMORY_FILTER_MODEL = "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 MEMORY_FILTER_MAX_CANDIDATES = "12"
-MEMORY_FILTER_MAX_OUTPUT = "5"
+MEMORY_FILTER_MAX_OUTPUT = "3"
 MEMORY_FILTER_MAX_CONTENT_CHARS = "700"
-MEMORY_FILTER_OUTPUT_CHARS = "300"
-MEMORY_FILTER_MAX_TOKENS = "1400"
 # Recall floor on the raw embedding score, applied BEFORE the reranker. Low on
 # purpose: embeddinggemma under-scores reworded-but-relevant hits (~0.15-0.20).
-# The reranker (bge-reranker-base) + LLM compressor own precision downstream.
+# Precision is handled by the reranker downstream.
 MEMORY_FILTER_MIN_SCORE = "0.1"
 DREAM_MODEL = "workers-ai/@cf/openai/gpt-oss-120b"
+DEDUP_COSINE = "0.9"
 VISION_MODEL = "workers-ai/@cf/google/gemma-4-26b-a4b-it"
-MEMORY_BACKEND = "vectorize"
 # Vector recall floor (see MEMORY_FILTER_MIN_SCORE note above). Precision is
 # handled by the reranker + compressor, so keep this as a garbage gate only.
 MEMORY_MIN_SCORE = "0.1"
 MEMORY_TOP_K = "50"
+# 闸三降权系数: 命中分×factor 低于 RECALL_MIN_SCORE(0.15) 地板即被压下。
+# 典型命中分 0.85-0.9，0.5 默认压不过地板（0.425>0.15），0.15 才能真正抑制窗口内重复注入 (0.9*0.15=0.135<0.15)。
+MEMORY_INJECT_DECAY_FACTOR = "0.15"
 MEMORY_RERANKER_MODEL = "workers-ai/@cf/baai/bge-reranker-base"
 VECTORIZE_INDEX_NAME = "memo-kb"
-EMBEDDING_MODEL = "workers-ai/@cf/google/embeddinggemma-300m"
-EMBEDDING_DIMENSIONS = "768"
-ENABLE_INCREMENTAL_MEMORY = "false"
-ENABLE_DREAM = "true"
+EMBEDDING_MODEL = "workers-ai/@cf/baai/bge-m3"
+EMBEDDING_DIMENSIONS = "1024"
 DREAM_TIME_ZONE = "Asia/Singapore"
 DREAM_MAX_MESSAGES = "40"
 DREAM_MEMORY_CONTEXT_LIMIT = "40"
@@ -53,6 +66,10 @@ ANTHROPIC_CACHE_TTL = "5m"
 # keep this as "messages". If the base_url is only the root domain, use
 # "v1/messages".
 CUSTOM_ANTHROPIC_MESSAGES_PATH = "messages"
+# GitHub daily archive pull. Leave GITHUB_DAILY_REPO empty to disable.
+# Token: `wrangler secret put GITHUB_DAILY_TOKEN` (fine-grained PAT, read-only contents on target repo).
+GITHUB_DAILY_REPO = ""
+GITHUB_DAILY_PATH = "archive/daily"
 
 # Private/account-specific variables live in the Cloudflare Dashboard:
 # AI_GATEWAY_BASE_URL, CHATBOX_API_KEY, MEMORY_MCP_API_KEY,

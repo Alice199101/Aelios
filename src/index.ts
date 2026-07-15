@@ -1,17 +1,34 @@
-import { handleAdmin } from "./api/admin";
+import { handleAdmin, handleDiaryAdmin, handleDiaryRewriteAdmin, handleWeeklyRollupAdmin } from "./api/admin";
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
-import { handleCacheHealth, handleVectorHealth, handleVectorReindex } from "./api/debug";
+import { handleCacheHealth, handleVectorDoctor, handleVectorHealth, handleVectorReindex } from "./api/debug";
+import { handleDreamRun, handleDreamStatus } from "./api/dream";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
-import { handleIngestMessagesApi, handleMemories, handleSearchMemoriesApi } from "./api/memories";
+import {
+  handleGlossaryApi,
+  handleIngestMessagesApi,
+  handleMemories,
+  handleMemoryBoot,
+  handleMemoryCandidates,
+  handleLongtailApi,
+  handlePrecious,
+  handleSearchMemoriesApi,
+  handleDiaryApi
+} from "./api/memories";
 import { handleMcp } from "./api/mcp";
 import { handleModels } from "./api/models";
-import { runDailyMemoryDigest } from "./memory/dailyDigest";
+import { handleRelationsGraph } from "./api/relations";
+import { runDailyMemoryDigest, runDreamBackfill } from "./memory/dailyDigest";
+import { runDiaryWriterNightly } from "./memory/diaryWriter";
+import { runWeeklyRollup } from "./memory/weeklyRollup";
+import { runGithubDailyPull } from "./memory/githubDaily";
 import { runMemoryRetention } from "./memory/retention";
 import { handleQueueMessage } from "./queue/consumer";
 import type { Env, QueueMessage } from "./types";
 import { openAiError } from "./utils/json";
+
+const DAILY_MAINTENANCE_CRON = "10 20 * * *";
 
 function getDailyDigestNamespace(env: Env): string {
   return env.DREAM_NAMESPACE?.trim() || "default";
@@ -28,9 +45,14 @@ async function runDailyMemoryDigestBatches(env: Env, namespace: string): Promise
   const maxRuns = getDailyDigestMaxRuns(env);
 
   for (let i = 0; i < maxRuns; i += 1) {
-    const result = await runDailyMemoryDigest(env, namespace);
-    results.push(result);
+    const result = await runDailyMemoryDigest(env, namespace, { trigger: "cron" });
+    results.push({ type: "primary", result });
     if (!result.ran || !result.stats?.hasMore) break;
+  }
+
+  const backfill = await runDreamBackfill(env, namespace, { maxDates: 2, lookback: 3 });
+  for (const item of backfill) {
+    results.push({ type: "backfill", date_label: item.dateLabel, result: item.result });
   }
 
   return results;
@@ -42,6 +64,18 @@ export default {
 
     if (request.method === "GET" && (url.pathname === "/admin" || url.pathname === "/memory-admin")) {
       return handleAdmin();
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/weekly-rollup") {
+      return handleWeeklyRollupAdmin(request, env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/admin/diary") {
+      return handleDiaryAdmin(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/diary-rewrite") {
+      return handleDiaryRewriteAdmin(request, env);
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -71,8 +105,40 @@ export default {
       return handleMemories(request, env, ctx);
     }
 
+    if (url.pathname === "/api/memories/export") {
+      return handleMemories(request, env, ctx);
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/relations/graph") {
+      return handleRelationsGraph(request, env);
+    }
+
     if (url.pathname === "/v1/memory" || url.pathname.startsWith("/v1/memory/")) {
       return handleMemories(request, env, ctx);
+    }
+
+    if (url.pathname === "/v1/memory_boot") {
+      return handleMemoryBoot(request, env);
+    }
+
+    if (url.pathname === "/v1/diary" || url.pathname === "/v1/diary/recent") {
+      return handleDiaryApi(request, env);
+    }
+
+    if (url.pathname === "/v1/precious" || url.pathname.startsWith("/v1/precious/")) {
+      return handlePrecious(request, env);
+    }
+
+    if (url.pathname === "/v1/glossary" || url.pathname.startsWith("/v1/glossary/")) {
+      return handleGlossaryApi(request, env);
+    }
+
+    if (url.pathname.startsWith("/v1/longtail/")) {
+      return handleLongtailApi(request, env);
+    }
+
+    if (url.pathname === "/v1/candidates" || url.pathname.startsWith("/v1/candidates/")) {
+      return handleMemoryCandidates(request, env);
     }
 
     if (
@@ -102,6 +168,18 @@ export default {
       return handleVectorReindex(request, env);
     }
 
+    if (request.method === "POST" && url.pathname === "/v1/vector-doctor") {
+      return handleVectorDoctor(request, env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/v1/dream/status") {
+      return handleDreamStatus(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/dream/run") {
+      return handleDreamRun(request, env);
+    }
+
     return openAiError("Not found", 404);
   },
 
@@ -117,15 +195,70 @@ export default {
     }
   },
 
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const namespace = getDailyDigestNamespace(env);
+    const cron = controller.cron;
+    const shouldRunDailyMaintenance = !cron || cron === DAILY_MAINTENANCE_CRON;
+
+    if (!shouldRunDailyMaintenance) {
+      console.log("scheduled memory maintenance skipped unknown cron", { namespace, cron });
+      return;
+    }
+
     ctx.waitUntil(
-      Promise.all([
-        runDailyMemoryDigestBatches(env, namespace),
-        runMemoryRetention(env, namespace)
-      ]).then(([digest, retention]) => {
-        console.log("scheduled daily memory maintenance", { namespace, digest, retention });
-      })
+      (async () => {
+        const results: unknown[] = [];
+
+        const dreamResults = await runDailyMemoryDigestBatches(env, namespace);
+        results.push({ type: "dream_batches", results: dreamResults });
+
+        let diaryWriter: Awaited<ReturnType<typeof runDiaryWriterNightly>> | undefined;
+        try {
+          diaryWriter = await runDiaryWriterNightly(env, namespace);
+        } catch (error) {
+          console.error("scheduled diary writer failed", {
+            namespace,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+        results.push({ type: "diary_writer", result: diaryWriter ?? { ok: false } });
+
+        const [retentionResult, githubResult] = await Promise.all([
+          runMemoryRetention(env, namespace).then(
+            (retention) => ({ ok: true as const, retention }),
+            (error) => {
+              console.error("scheduled memory retention failed", { namespace, error: String(error) });
+              return { ok: false as const, error: String(error) };
+            }
+          ),
+          // 04:10 SGT cron (20:10 UTC) runs ~4h after cmh-lite's 23:50 local push — safe to pull yesterday's daily.
+          runGithubDailyPull(env).then(
+            (r) => {
+              console.log("github daily pull", r);
+              return r;
+            },
+            (e) => {
+              console.error("github daily pull failed", String(e));
+              return { ok: false };
+            }
+          )
+        ]);
+        results.push({ type: "retention", result: retentionResult });
+        results.push({ type: "github_daily", result: githubResult });
+
+        let weeklyRollup: Awaited<ReturnType<typeof runWeeklyRollup>> | undefined;
+        try {
+          weeklyRollup = await runWeeklyRollup(env, namespace);
+        } catch (error) {
+          console.error("scheduled weekly rollup failed", {
+            namespace,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+        results.push({ type: "weekly_rollup", result: weeklyRollup ?? { ok: false } });
+
+        console.log("scheduled memory maintenance", { namespace, cron, results });
+      })()
     );
   }
 };
