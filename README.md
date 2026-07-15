@@ -7,7 +7,21 @@
 - 我是人类，想部署使用 → 看 [人类版](#人类版)
 - 我是 AI 助手，想维护调试 → 看 [AI 版](#ai版维护交接)
 
-分支指路：`main` 与 memory-v2 内容同步（作者线上跑的就是这套）；旧 v1 稳定版封存在 tag `v1-final`，只需 v1 的用户检出该 tag；[`tg-bot`](../../tree/tg-bot) 在 v2 上叠了 Telegram bot 层。
+## 分支指路
+
+- **main**：唯一主线，作者线上跑的就是这套（v2 记忆系统：六层分层、三档写入、v4 assembler 缓存、boot 包 + 召回三闸）。AGPL-3.0。
+- **memory-v2 分支已退役**：内容已全部并入 main，不再更新，历史留档。老用户如果 Cloudflare 构建还指着 memory-v2，把 Production branch 切回 main 即可，数据不用迁。
+- **tg-bot**：Telegram bot 集成分支，叠在主线上，部署方式见其分支文档。
+
+## 想用 v1 最终版？
+
+```bash
+git clone https://github.com/wusaki0723/Aelios
+cd Aelios
+git checkout v1-final
+```
+
+v1-final 是 v1 稳定版的最终封存点，之后不再维护；注意 v1-final 里的许可证仍是 MIT（换证不溯及已发布的版本），想要轻量老版的用户可以继续按 MIT 使用，文档以该 tag 内的 README 为准。
 
 ---
 
