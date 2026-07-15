@@ -7,7 +7,7 @@
 - 我是人类，想部署使用 → 看 [人类版](#人类版)
 - 我是 AI 助手，想维护调试 → 看 [AI 版](#ai版维护交接)
 
-分支指路：`main` 是 v1 稳定版（部署完不用管）；本分支 `memory-v2` 是作者线上跑的 v2 记忆系统；[`tg-bot`](../../tree/tg-bot) 在 v2 上叠了 Telegram bot 层。
+分支指路：`main` 与 memory-v2 内容同步（作者线上跑的就是这套）；旧 v1 稳定版封存在 tag `v1-final`，只需 v1 的用户检出该 tag；[`tg-bot`](../../tree/tg-bot) 在 v2 上叠了 Telegram bot 层。
 
 ---
 
@@ -141,7 +141,7 @@ Workers AI 免费额度主要花在每日一次的 dream（默认 `llama-3.3-70b
 
 - 部署命令必须是 `npm run deploy:cloudflare`，别的会覆盖变量、不建库。
 - 重新部署变量不会丢（命令带 `--keep-vars`）。
-- Vectorize 索引 `memo-kb`（768 维 cosine）别手动删。
+- Vectorize 索引 `memo-kb`（1024 维 cosine）别手动删。
 - 看图会切到 `VISION_MODEL`，留意它的价格。
 
 到这儿就够了，剩下的交给 AI。
@@ -162,7 +162,7 @@ Cloudflare Workers 上的 OpenAI-compatible Memory Proxy。帮用户部署时：
 |---|---|
 | Worker | `companion-memory-proxy` |
 | D1 | `companion_memory_proxy` |
-| Vectorize | `memo-kb`（768 维 cosine） |
+| Vectorize | `memo-kb`（1024 维 cosine） |
 | Queue | `companion-memory` |
 | Embedding | `workers-ai/@cf/baai/bge-m3` |
 | Dimensions | 1024（覆盖 `EMBEDDING_MODEL` 时输出维度需匹配） |
@@ -427,7 +427,9 @@ npm run vectorize:clean:llm
 
 ## License
 
-MIT
+AGPL-3.0
+
+可自由使用、修改本软件；但若你将修改后的版本对外提供网络服务，须以相同许可开源修改后的源码。
 
 ## 交流与反馈
 
