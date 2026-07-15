@@ -1,4 +1,4 @@
-import { handleAdmin } from "./api/admin";
+import { handleAdmin, handleDiaryAdmin, handleDiaryRewriteAdmin, handleWeeklyRollupAdmin } from "./api/admin";
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
 import { handleCacheHealth, handleVectorDoctor, handleVectorHealth, handleVectorReindex } from "./api/debug";
@@ -20,6 +20,8 @@ import { handleMcp } from "./api/mcp";
 import { handleModels } from "./api/models";
 import { handleRelationsGraph } from "./api/relations";
 import { runDailyMemoryDigest, runDreamBackfill } from "./memory/dailyDigest";
+import { runDiaryWriterNightly } from "./memory/diaryWriter";
+import { runWeeklyRollup } from "./memory/weeklyRollup";
 import { runGithubDailyPull } from "./memory/githubDaily";
 import { runMemoryRetention } from "./memory/retention";
 import { handleQueueMessage } from "./queue/consumer";
@@ -62,6 +64,18 @@ export default {
 
     if (request.method === "GET" && (url.pathname === "/admin" || url.pathname === "/memory-admin")) {
       return handleAdmin();
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/weekly-rollup") {
+      return handleWeeklyRollupAdmin(request, env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/admin/diary") {
+      return handleDiaryAdmin(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/diary-rewrite") {
+      return handleDiaryRewriteAdmin(request, env);
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -185,43 +199,66 @@ export default {
     const namespace = getDailyDigestNamespace(env);
     const cron = controller.cron;
     const shouldRunDailyMaintenance = !cron || cron === DAILY_MAINTENANCE_CRON;
-    const tasks: Array<Promise<unknown>> = [];
 
-    if (shouldRunDailyMaintenance) {
-      tasks.push(runDailyMemoryDigestBatches(env, namespace));
-      tasks.push(
-        runMemoryRetention(env, namespace).then(
-          (retention) => ({ ok: true as const, retention }),
-          (error) => {
-            console.error("scheduled memory retention failed", { namespace, error: String(error) });
-            return { ok: false as const, error: String(error) };
-          }
-        )
-      );
-      // 04:10 SGT cron (20:10 UTC) runs ~4h after cmh-lite's 23:50 local push — safe to pull yesterday's daily.
-      tasks.push(
-        runGithubDailyPull(env).then(
-          (r) => {
-            console.log("github daily pull", r);
-            return r;
-          },
-          (e) => {
-            console.error("github daily pull failed", String(e));
-            return { ok: false };
-          }
-        )
-      );
-    }
-
-    if (tasks.length === 0) {
+    if (!shouldRunDailyMaintenance) {
       console.log("scheduled memory maintenance skipped unknown cron", { namespace, cron });
       return;
     }
 
     ctx.waitUntil(
-      Promise.all(tasks).then((results) => {
+      (async () => {
+        const results: unknown[] = [];
+
+        const dreamResults = await runDailyMemoryDigestBatches(env, namespace);
+        results.push({ type: "dream_batches", results: dreamResults });
+
+        let diaryWriter: Awaited<ReturnType<typeof runDiaryWriterNightly>> | undefined;
+        try {
+          diaryWriter = await runDiaryWriterNightly(env, namespace);
+        } catch (error) {
+          console.error("scheduled diary writer failed", {
+            namespace,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+        results.push({ type: "diary_writer", result: diaryWriter ?? { ok: false } });
+
+        const [retentionResult, githubResult] = await Promise.all([
+          runMemoryRetention(env, namespace).then(
+            (retention) => ({ ok: true as const, retention }),
+            (error) => {
+              console.error("scheduled memory retention failed", { namespace, error: String(error) });
+              return { ok: false as const, error: String(error) };
+            }
+          ),
+          // 04:10 SGT cron (20:10 UTC) runs ~4h after cmh-lite's 23:50 local push — safe to pull yesterday's daily.
+          runGithubDailyPull(env).then(
+            (r) => {
+              console.log("github daily pull", r);
+              return r;
+            },
+            (e) => {
+              console.error("github daily pull failed", String(e));
+              return { ok: false };
+            }
+          )
+        ]);
+        results.push({ type: "retention", result: retentionResult });
+        results.push({ type: "github_daily", result: githubResult });
+
+        let weeklyRollup: Awaited<ReturnType<typeof runWeeklyRollup>> | undefined;
+        try {
+          weeklyRollup = await runWeeklyRollup(env, namespace);
+        } catch (error) {
+          console.error("scheduled weekly rollup failed", {
+            namespace,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+        results.push({ type: "weekly_rollup", result: weeklyRollup ?? { ok: false } });
+
         console.log("scheduled memory maintenance", { namespace, cron, results });
-      })
+      })()
     );
   }
 };

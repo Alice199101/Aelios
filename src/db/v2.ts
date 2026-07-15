@@ -1311,6 +1311,188 @@ export async function upsertDailyLog(
   return { namespace: input.namespace, date: input.date, title: input.title, summary: input.summary, updated_at: now };
 }
 
+export async function listDailyLogsInRange(
+  db: D1Database,
+  input: { namespace: string; startDate: string; endDate: string }
+): Promise<DailyLogRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT namespace, date, title, summary, updated_at
+       FROM daily_log
+       WHERE namespace = ?
+         AND date >= ?
+         AND date <= ?
+       ORDER BY date ASC`
+    )
+    .bind(input.namespace, input.startDate, input.endDate)
+    .all<DailyLogRow>();
+  return result.results ?? [];
+}
+
+export async function listRecentDailyLogs(
+  db: D1Database,
+  input: { namespace: string; limit: number }
+): Promise<DailyLogRow[]> {
+  const limit = Math.min(Math.max(Math.floor(input.limit), 1), 100);
+  const result = await db
+    .prepare(
+      `SELECT namespace, date, title, summary, updated_at
+       FROM daily_log
+       WHERE namespace = ?
+       ORDER BY date DESC
+       LIMIT ?`
+    )
+    .bind(input.namespace, limit)
+    .all<DailyLogRow>();
+  return result.results ?? [];
+}
+
+export async function listDailyLogDatesBefore(
+  db: D1Database,
+  input: { namespace: string; beforeDate: string }
+): Promise<string[]> {
+  const result = await db
+    .prepare(
+      `SELECT date
+       FROM daily_log
+       WHERE namespace = ?
+         AND date < ?
+       ORDER BY date ASC`
+    )
+    .bind(input.namespace, input.beforeDate)
+    .all<{ date: string }>();
+  return (result.results ?? []).map((row) => row.date);
+}
+
+export interface WeeklyLogRow {
+  namespace: string;
+  week: string;
+  start_date: string;
+  end_date: string;
+  title: string;
+  summary: string;
+  source_days: number;
+  updated_at: string;
+}
+
+export async function listRecentWeeklyLogs(
+  db: D1Database,
+  input: { namespace: string; limit: number }
+): Promise<WeeklyLogRow[]> {
+  const limit = Math.min(Math.max(Math.floor(input.limit), 1), 100);
+  const result = await db
+    .prepare(
+      `SELECT namespace, week, start_date, end_date, title, summary, source_days, updated_at
+       FROM weekly_log
+       WHERE namespace = ?
+       ORDER BY week DESC
+       LIMIT ?`
+    )
+    .bind(input.namespace, limit)
+    .all<WeeklyLogRow>();
+  return result.results ?? [];
+}
+
+export async function getWeeklyLog(
+  db: D1Database,
+  input: { namespace: string; week: string }
+): Promise<WeeklyLogRow | null> {
+  const row = await db
+    .prepare(
+      `SELECT namespace, week, start_date, end_date, title, summary, source_days, updated_at
+       FROM weekly_log
+       WHERE namespace = ? AND week = ?`
+    )
+    .bind(input.namespace, input.week)
+    .first<WeeklyLogRow>();
+  return row ?? null;
+}
+
+export function bindUpsertWeeklyLogStatement(
+  db: D1Database,
+  input: {
+    namespace: string;
+    week: string;
+    startDate: string;
+    endDate: string;
+    title: string;
+    summary: string;
+    sourceDays: number;
+  }
+): D1PreparedStatement {
+  const now = nowIso();
+  return db
+    .prepare(
+      `INSERT INTO weekly_log (namespace, week, start_date, end_date, title, summary, source_days, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(namespace, week) DO UPDATE SET
+         start_date = excluded.start_date,
+         end_date = excluded.end_date,
+         title = excluded.title,
+         summary = excluded.summary,
+         source_days = excluded.source_days,
+         updated_at = excluded.updated_at`
+    )
+    .bind(
+      input.namespace,
+      input.week,
+      input.startDate,
+      input.endDate,
+      input.title,
+      input.summary,
+      input.sourceDays,
+      now
+    );
+}
+
+export async function upsertWeeklyLog(
+  db: D1Database,
+  input: {
+    namespace: string;
+    week: string;
+    startDate: string;
+    endDate: string;
+    title: string;
+    summary: string;
+    sourceDays: number;
+  }
+): Promise<WeeklyLogRow> {
+  const now = nowIso();
+  await bindUpsertWeeklyLogStatement(db, input).run();
+  return {
+    namespace: input.namespace,
+    week: input.week,
+    start_date: input.startDate,
+    end_date: input.endDate,
+    title: input.title,
+    summary: input.summary,
+    source_days: input.sourceDays,
+    updated_at: now
+  };
+}
+
+export function bindDeleteDailyLogsInRangeStatement(
+  db: D1Database,
+  input: { namespace: string; startDate: string; endDate: string }
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `DELETE FROM daily_log
+       WHERE namespace = ?
+         AND date >= ?
+         AND date <= ?`
+    )
+    .bind(input.namespace, input.startDate, input.endDate);
+}
+
+export async function deleteDailyLogsInRange(
+  db: D1Database,
+  input: { namespace: string; startDate: string; endDate: string }
+): Promise<number> {
+  const result = await bindDeleteDailyLogsInRangeStatement(db, input).run();
+  return result.meta.changes ?? 0;
+}
+
 // =====================================================================
 // longtail 向量同步 (dream 种向量用)
 // =====================================================================
