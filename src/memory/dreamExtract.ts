@@ -122,7 +122,7 @@ export function buildDreamExtractPrompt(messages: MessageRecord[], existingFactK
     "- 关于用户的记忆，优先写成“你……”。关于我应遵守的长期方式，写成“我需要……”。",
     "- 信息类（fact/decision/habit 等稳定事实）：content 压到 1-2 句自然短句。",
     "- 情感/关系类（relationship/boundary/event 里的关系事件）：可以写 3-5 句，保留温度和关键原话——用「」嵌入原话片段，不为压短丢掉说话人的语气。引用原话一律用「」，不用英文双引号（JSON 转义安全）。",
-    "- type 只能从这 8 个里选：fact、event、preference、relationship、boundary、habit、decision、note。绝不输出 project、world_fact、commitment 等其他值；项目进展归 fact，承诺/决定归 decision，习惯归 habit。",
+    "- type 只能从这 15 个里选：note、preference、boundary、relationship、project、identity、moment、whisper、excerpt、diary、debug、fact、event、habit、decision。绝不输出 world_fact、commitment 等其他值；项目进展归 fact，承诺/决定归 decision，习惯归 habit。",
     "- 稳定事实必须尽量给 fact_key，格式为小写 ASCII，例如 preference:answer-style、boundary:no-system-records、decision:sell-car-2026-09。",
     "- 临时计划和意图不是稳定事实：要么提炼成背后的持久事实，要么直接跳过。",
     "",

@@ -44,7 +44,7 @@ button,input,textarea,select{font:inherit;color:inherit} button{cursor:pointer} 
 <body>
 <div id="app" class="app"></div>
 <script>
-const TYPES = ["note","preference","boundary","relationship","project","identity","moment","whisper","excerpt","diary","debug"];
+const TYPES = ["note","preference","boundary","relationship","project","identity","moment","whisper","excerpt","diary","debug","fact","event","habit","decision"];
 const $ = (sel, root=document) => root.querySelector(sel);
 const app = $("#app");
 const state = {
