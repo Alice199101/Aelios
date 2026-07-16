@@ -158,5 +158,105 @@ export async function runMemoryRetention(
   // 7. Write throttle cursor
   await writeCursor(env.DB, cursorName, now);
 
+  // Phase 3: 遗忘曲线衰减
+  try {
+    const decayResult = await runDecayCurve(env, namespace);
+    stats.decayProcessed = decayResult.processed;
+    stats.decayArchived = decayResult.decayed;
+  } catch (err) {
+    console.error("retention: decay curve failed", err);
+  }
+
   return { ran: true, stats };
+}
+
+// ============================================================
+// Phase 3: 遗忘曲线衰减 — 在凌晨 Dream 之后串行执行
+// 设计原则：不在请求热路径计算，每天凌晨离线执行一次。
+// 衰减只影响 D1 中的 decay_score 字段和 status。
+// ============================================================
+
+interface DecayResult {
+  score: number;
+  shouldArchive: boolean;
+}
+
+export function computeDecayScore(memory: { importance: number; confidence: number; pinned: number; last_recalled_at: string | null; created_at: string; recall_count: number; tags: string | null }): DecayResult {
+  const now = Date.now();
+  const daysSinceRecall = memory.last_recalled_at
+    ? (now - new Date(memory.last_recalled_at).getTime()) / 86400000
+    : (now - new Date(memory.created_at).getTime()) / 86400000;
+
+  let halfLifeDays = 14;
+  if (memory.importance >= 0.8) halfLifeDays *= 2;
+  else if (memory.importance >= 0.6) halfLifeDays *= 1.5;
+  if (memory.recall_count >= 5) halfLifeDays *= 2;
+  else if (memory.recall_count >= 3) halfLifeDays *= 1.5;
+  if (memory.pinned === 1) return { score: 1.0, shouldArchive: false };
+
+  const timeDecay = Math.pow(0.5, daysSinceRecall / halfLifeDays);
+
+  let arousal = 0;
+  try {
+    const parsedTags: string[] = JSON.parse(memory.tags || "[]");
+    for (const tag of parsedTags) {
+      const match = tag.match(/^emotion:v=([-\d.]+),a=([-\d.]+)$/);
+      if (match) { arousal = parseFloat(match[2]); break; }
+    }
+  } catch { /* ignore */ }
+  const emotionMod = 1 + Math.min(Math.max(arousal, 0), 1) * 0.3;
+
+  const baseScore = memory.importance * memory.confidence;
+  const score = Math.min(baseScore * timeDecay * emotionMod, 1);
+  const shouldArchive = score < 0.1;
+  return { score: Math.round(score * 10000) / 10000, shouldArchive };
+}
+
+async function runDecayCurve(env: Env, namespace: string): Promise<{ processed: number; decayed: number }> {
+  let processed = 0;
+  let decayed = 0;
+  const now = new Date().toISOString();
+  const BATCH = 200;
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let rows: Array<{ id: string; importance: number; confidence: number; pinned: number; last_recalled_at: string | null; created_at: string; recall_count: number; tags: string | null }>;
+    try {
+      const result = await env.DB
+        .prepare("SELECT id, importance, confidence, pinned, last_recalled_at, created_at, recall_count, tags FROM memories WHERE namespace = ? AND status = 'active' ORDER BY id LIMIT ? OFFSET ?")
+        .bind(namespace, BATCH, offset)
+        .all<{ id: string; importance: number; confidence: number; pinned: number; last_recalled_at: string | null; created_at: string; recall_count: number; tags: string | null }>();
+      rows = result.results ?? [];
+    } catch (error) {
+      console.error("retention: decay batch fetch failed", { namespace, offset, error });
+      break;
+    }
+    if (rows.length === 0) { hasMore = false; break; }
+
+    for (const memory of rows) {
+      processed += 1;
+      const { score, shouldArchive } = computeDecayScore(memory);
+      try {
+        if (shouldArchive) {
+          await env.DB
+            .prepare("UPDATE memories SET decay_score = ?, status = 'decayed', updated_at = ? WHERE namespace = ? AND id = ?")
+            .bind(score, now, namespace, memory.id)
+            .run();
+          decayed += 1;
+        } else {
+          await env.DB
+            .prepare("UPDATE memories SET decay_score = ?, updated_at = ? WHERE namespace = ? AND id = ?")
+            .bind(score, now, namespace, memory.id)
+            .run();
+        }
+      } catch (error) {
+        console.error("retention: decay update failed", { id: memory.id, error });
+      }
+    }
+    offset += rows.length;
+    if (rows.length < BATCH) hasMore = false;
+  }
+  console.log("retention: decay curve complete", { namespace, processed, decayed });
+  return { processed, decayed };
 }

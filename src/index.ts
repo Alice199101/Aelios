@@ -68,6 +68,7 @@ async function runDailyMemoryDigestBatches(env: Env, namespace: string): Promise
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const namespace = getDailyDigestNamespace(env);
 
     if (request.method === "GET" && (url.pathname === "/admin" || url.pathname === "/memory-admin")) {
       return handleAdmin();
@@ -130,6 +131,23 @@ export default {
 
     if (url.pathname === "/v1/memory_boot") {
       return handleMemoryBoot(request, env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/v1/memory/handoff") {
+      try {
+        const { getHandoffSnapshot } = await import("./memory/handoff");
+        const snapshot = await getHandoffSnapshot(env, namespace);
+        if (!snapshot) {
+          return openAiError("No handoff snapshot available", 404);
+        }
+        return new Response(JSON.stringify({ namespace, handoff: snapshot }), {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8" }
+        });
+      } catch (error) {
+        console.error("handoff API error", error);
+        return openAiError("Handoff service error", 500);
+      }
     }
 
     if (url.pathname === "/v1/diary" || url.pathname === "/v1/diary/recent") {
@@ -256,6 +274,15 @@ export default {
         ]);
         results.push({ type: "retention", result: retentionResult });
         results.push({ type: "github_daily", result: githubResult });
+
+        // Phase 3: handoff snapshot — after retention so decay_score is fresh
+        try {
+          console.log("[cron] phase 3: handoff snapshot");
+          const { refreshHandoffSnapshot } = await import("./memory/handoff");
+          await refreshHandoffSnapshot(env, namespace);
+        } catch (err) {
+          console.error("[cron] handoff snapshot failed", err);
+        }
 
         let weeklyRollup: Awaited<ReturnType<typeof runWeeklyRollup>> | undefined;
         try {

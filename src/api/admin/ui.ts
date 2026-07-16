@@ -335,6 +335,8 @@ document.documentElement.dataset.theme = localStorage.getItem('aelios.admin.colo
                 <span class="rounded-full bg-coral px-2.5 py-1 font-semibold text-zinc-950" x-text="memory.type"></span>
                 <span x-text="memory.id"></span>
                 <span x-text="pct(memory.confidence)"></span>
+                <span x-show="typeof memory.decay_score === 'number'" class="flex items-center gap-1"><span class="inline-block h-1.5 rounded-full" :style="'width:' + Math.max(4, Math.round((memory.decay_score ?? 0) * 60)) + 'px;background:' + ((memory.decay_score ?? 0) >= 0.7 ? '#4ade80' : (memory.decay_score ?? 0) >= 0.4 ? '#facc15' : '#f87171')"></span><span class="text-zinc-500" x-text="'d' + (memory.decay_score ?? 0).toFixed(2)"></span></span>
+                <span x-show="typeof memory.decay_score !== 'number'" class="text-zinc-600" title="decay_score 未计算（需触发 cron）">d—</span>
               </div>
               <template x-if="!memory.editing">
                 <p class="whitespace-pre-wrap text-sm leading-7 text-zinc-100" x-text="memory.content"></p>
