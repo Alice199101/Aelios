@@ -63,6 +63,8 @@ const state = {
   filters:{ query:"", top_k:20, filter:true, types:[], source:"", tags:"", pinned:false },
   sortOrder:"newest",
   monthlyRollup:{loading:false,dryRun:null,result:null,error:""},
+  weeklyRollup:{loading:false,dryRun:null,result:null,error:""},
+  weeklies:[],
   showFilters:false,
   diaries:[],
   diaryPaging:{offset:0, hasMore:false},
@@ -231,7 +233,7 @@ function statusDot(){
 function renderTop(){
   return '<div class="top">'+
     '<div class="brand"><div class="mark">A</div><div><b>Aelios</b><span>MEMORY · ADMIN</span></div></div>'+
-    '<div class="tabs"><button class="tab '+(state.tab==="memories"?"active":"")+'" data-tab="memories">记忆库</button><button class="tab '+(state.tab==="diaries"?"active":"")+'" data-tab="diaries">日记</button><button class="tab '+(state.tab==="emotion"?"active":"")+'" data-tab="emotion">情感地图</button><button class="tab '+(state.tab==="rollup"?"active":"")+'" data-tab="rollup">月度压缩</button></div>'+
+    '<div class="tabs"><button class="tab '+(state.tab==="memories"?"active":"")+'" data-tab="memories">记忆库</button><button class="tab '+(state.tab==="diaries"?"active":"")+'" data-tab="diaries">日记</button><button class="tab '+(state.tab==="emotion"?"active":"")+'" data-tab="emotion">情感地图</button></div>'+
     '<div class="cred"><input class="input worker mono" id="worker-url" placeholder="Worker URL" value="'+esc(state.workerUrl)+'"><input class="input key mono" id="api-key" type="password" placeholder="API Key" value="'+esc(state.apiKey)+'"></div>'+
     statusDot()+
     '<button class="btn primary" id="test-conn">测试连接</button>'+
@@ -315,38 +317,45 @@ function renderDetail(){
   return rows.map(([k,v,ok])=>'<div class="kv"><span>'+esc(k)+'</span><b class="mono">'+esc(v ?? "—")+'</b>'+(ok===undefined?'<span></span>':'<span class="badge '+(ok?"good":"bad")+'">'+(ok?"ok":"fail")+'</span>')+'</div>').join("");
 }
 
-function renderMonthlyRollup(){
-  const mr = state.monthlyRollup;
-  let body = '<main class="debug"><h1>月度压缩</h1><div class="meta">POST /admin/monthly-rollup · 将当月周刊合并为月度摘要</div>'+
-    '<section class="debug-card"><div class="debug-head"><b>Monthly Rollup</b><span class="grow"></span>'+
-    '<button class="btn" id="run-rollup-dry">'+(mr.loading&&mr.dryRun?'运行中':'Dry run')+'</button>'+
-    '<button class="btn danger" id="run-rollup-exec">'+(mr.loading&&!mr.dryRun?'压缩中':'执行压缩')+'</button></div>';
-  if(mr.error) body += '<div class="hint" style="margin:12px;color:var(--bad)">'+esc(mr.error)+'</div>';
-  if(mr.result){
-    const s = mr.result.data?.stats || {};
-    body += '<div class="stats">'+
-      '<div class="stat"><small>dry_run</small><b>'+esc(String(s.dry_run))+'</b></div>'+
-      '<div class="stat"><small>eligible</small><b>'+esc(s.months_eligible ?? "—")+'</b></div>'+
-      '<div class="stat"><small>processed</small><b>'+esc(s.months_processed ?? 0)+'</b></div>'+
-      '<div class="stat"><small>skipped</small><b>'+esc(s.months_skipped ?? 0)+'</b></div>'+
+function renderRollupResult(label, rr, runFn){
+  if(!rr.result && !rr.loading && !rr.error) return '';
+  let h = '<section class="debug-card" style="margin-top:12px"><div class="debug-head"><b>'+esc(label)+'</b><span class="grow"></span>'+
+    (rr.result && rr.result.data?.stats?.dry_run
+      ? '<button class="btn danger" id="'+runFn+'-exec">执行</button>'
+      : '<button class="btn" id="'+runFn+'-dry">'+(rr.loading&&rr.dryRun?'运行中':'Dry run')+'</button>')+'</div>';
+  if(rr.error) h += '<div class="hint" style="margin:12px;color:var(--bad)">'+esc(rr.error)+'</div>';
+  if(rr.result){
+    const s = rr.result.data?.stats || {};
+    h += '<div class="stats">'+
+      '<div class="stat"><small>eligible</small><b>'+esc(s.months_eligible ?? s.weeks_eligible ?? "—")+'</b></div>'+
+      '<div class="stat"><small>processed</small><b>'+esc(s.months_processed ?? s.weeks_processed ?? 0)+'</b></div>'+
+      '<div class="stat"><small>skipped</small><b>'+esc(s.months_skipped ?? s.weeks_skipped ?? 0)+'</b></div>'+
     '</div>';
     if(s.details && s.details.length){
-      body += '<div class="cards">';
+      h += '<div class="cards">';
       s.details.forEach(function(d){
-        const badge = d.status==="rolled_up"?'<span class="badge good">rolled up</span>':
-          d.status==="skipped"?'<span class="badge">skipped</span>':
-          d.status==="error"?'<span class="badge bad">error</span>':
+        const badge = d.status==="rolled_up"?'<span class="badge good">ok</span>':
+          d.status==="dry_run"?'<span class="badge">dry</span>':
+          d.status==="skipped"?'<span class="badge">skip</span>':
+          d.status==="error"?'<span class="badge bad">err</span>':
           '<span class="badge">'+esc(d.status)+'</span>';
-        body += '<article class="card"><div class="card-top"><span class="type">month</span><span class="source">'+esc(d.month)+'</span>'+badge+'</div>'+
-          '<div class="content"><b>'+esc(d.title || "—")+'</b>\n'+esc((d.summary||d.reason||"").slice(0,300))+'</div></article>';
+        h += '<article class="card"><div class="card-top"><span class="type">'+esc(d.month||d.week||"—")+'</span>'+badge+'</div>'+
+          '<div class="content"><b>'+esc(d.title || "—")+'</b>\n'+esc((d.summary||d.reason||"").slice(0,240))+'</div></article>';
       });
-      body += '</div>';
+      h += '</div>';
     }
-  } else if(!mr.loading && !mr.error){
-    body += '<div class="empty"><div><b>尚未运行</b><span>Dry run 预览 → 确认无误后执行压缩。</span></div></div>';
   }
-  body += '</section></main>';
-  return body;
+  h += '</section>';
+  return h;
+}
+async function runWeeklyRollup(dryRun){
+  state.weeklyRollup = {loading:true,dryRun,result:null,error:""}; render();
+  try {
+    const body = { namespace:"default", dry_run: dryRun };
+    const data = await request("/admin/weekly-rollup", { method:"POST", body:JSON.stringify(body) });
+    state.weeklyRollup = {loading:false,dryRun,result:data,error:""};
+  } catch(e){ state.weeklyRollup = {loading:false,dryRun,result:null,error:e.message}; }
+  render();
 }
 async function runMonthlyRollup(dryRun){
   state.monthlyRollup = {loading:true,dryRun,result:null,error:""}; render();
@@ -364,6 +373,7 @@ async function loadDiaries(offset=0, append=false){
     const data = await request("/admin/diary?namespace=default&limit=30");
     const incoming = data.dailies || [];
     state.diaries = append ? [...state.diaries, ...incoming] : incoming;
+    state.weeklies = data.weeklies || [];
     state.diaryPaging = { offset: offset + incoming.length, hasMore: false };
     state.status = "connected";
   } catch(e) { state.error = e.message; }
@@ -372,17 +382,41 @@ async function loadDiaries(offset=0, append=false){
 function diaryCard(d){
   return '<article class="card">'+
     '<div class="card-top"><span class="type">diary</span><span class="source">'+esc(d.date || "—")+'</span><span class="date">'+shortDate(d.updated_at)+'</span></div>'+
-    '<div class="content"><b>'+esc(d.title || "—")+'</b>\n'+esc((d.summary || "").slice(0,300))+'</div>'+
+    '<div class="content"><b>'+esc(d.title || "—")+'</b>\n'+esc((d.summary || "").slice(0,200))+'</div>'+
+  '</article>';
+}
+function weekCard(w){
+  return '<article class="card">'+
+    '<div class="card-top"><span class="type">week</span><span class="source">'+esc(w.week)+'</span><span class="muted">'+esc(w.start_date+"~"+w.end_date)+'</span></div>'+
+    '<div class="content"><b>'+esc(w.title || "—")+'</b>\n'+esc((w.summary || "").slice(0,200))+'</div>'+
   '</article>';
 }
 function renderDiaries(){
-  return '<main class="debug">'+
-    '<div class="debug-head"><h1>日记</h1><span class="meta">GET /admin/diary · 每日摘要归档</span><span class="grow"></span><button class="btn" id="refresh-diaries">刷新</button></div>'+
-    (state.error ? '<div class="hint" style="margin:12px;border-color:rgba(226,118,99,.5);color:var(--bad)">'+esc(state.error)+'</div>' : '')+
-    (state.loading && !state.diaries.length ? '<div class="empty"><div><b>加载中</b><span class="mono">fetching diaries...</span></div></div>' :
-      state.diaries.length ? '<div class="cards">'+state.diaries.map(diaryCard).join("") +'</div>' :
-      '<div class="empty"><div><b>暂无日记</b><span>dailyDigest 运行后会自动生成日记条目。</span></div></div>')+
-  '</main>';
+  let h = '<main class="debug">'+
+    '<div class="debug-head"><h1>日记</h1><span class="meta">GET /admin/diary</span><span class="grow"></span>'+
+    '<button class="btn" id="run-weekly-dry">周汇总</button>'+
+    '<button class="btn" id="run-monthly-dry">月压缩</button>'+
+    '<button class="btn" id="refresh-diaries">刷新</button></div>';
+  h += renderRollupResult('周汇总', state.weeklyRollup, 'run-weekly');
+  h += renderRollupResult('月压缩', state.monthlyRollup, 'run-monthly');
+  if(state.error) h += '<div class="hint" style="margin:12px;border-color:rgba(226,118,99,.5);color:var(--bad)">'+esc(state.error)+'</div>';
+  if(state.loading && !state.diaries.length && !state.weeklies.length){
+    h += '<div class="empty"><div><b>加载中</b><span class="mono">fetching...</span></div></div>';
+  } else {
+    if(state.diaries.length){
+      h += '<div style="padding:8px 12px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">日报</div>'+
+        '<div class="cards">'+state.diaries.map(diaryCard).join("")+'</div>';
+    }
+    if(state.weeklies.length){
+      h += '<div style="padding:8px 12px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">周报</div>'+
+        '<div class="cards">'+state.weeklies.map(weekCard).join("")+'</div>';
+    }
+    if(!state.diaries.length && !state.weeklies.length){
+      h += '<div class="empty"><div><b>暂无日记</b><span>dailyDigest + weeklyRollup 运行后自动生成。</span></div></div>';
+    }
+  }
+  h += '</main>';
+  return h;
 }
 async function loadEmotionMap(){
   state.emotionMapLoading = true; state.emotionMap = []; state.error = ""; render();
@@ -494,7 +528,7 @@ function restoreScroll(pos){
 }
 function render(preserveScroll=true){
   const scroll = preserveScroll ? captureScroll() : null;
-  app.innerHTML = renderTop() + (state.tab === "rollup" ? renderMonthlyRollup() : state.tab === "diaries" ? renderDiaries() : state.tab === "emotion" ? renderEmotionMap() : '<div class="main">'+renderFilters()+renderList()+renderDetail()+'</div>') + (state.toast ? '<div class="toast">'+esc(state.toast)+'</div>' : "");
+  app.innerHTML = renderTop() + (state.tab === "diaries" ? renderDiaries() : state.tab === "emotion" ? renderEmotionMap() : '<div class="main">'+renderFilters()+renderList()+renderDetail()+'</div>') + (state.toast ? '<div class="toast">'+esc(state.toast)+'</div>' : "");
   bind();
   restoreScroll(scroll);
 }
@@ -578,8 +612,11 @@ function bind(){
     setTimeout(()=>drawEmotionCanvas(state.emotionMap), 50);
   }
   $("#refresh-emotion")?.addEventListener("click", ()=>loadEmotionMap());
-  $("#run-rollup-dry")?.addEventListener("click", ()=>runMonthlyRollup(true));
-  $("#run-rollup-exec")?.addEventListener("click", ()=>runMonthlyRollup(false));
+  $("#run-weekly-dry")?.addEventListener("click", ()=>runWeeklyRollup(true));
+  $("#run-weekly-exec")?.addEventListener("click", ()=>runWeeklyRollup(false));
+  $("#run-monthly-dry")?.addEventListener("click", ()=>runMonthlyRollup(true));
+  $("#run-monthly-exec")?.addEventListener("click", ()=>runMonthlyRollup(false));
+
 }
 render();
 if(state.apiKey) { loadList(); loadDiaries(); }
