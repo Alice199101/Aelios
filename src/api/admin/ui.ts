@@ -62,10 +62,7 @@ const state = {
   toast:"",
   filters:{ query:"", top_k:20, filter:true, types:[], source:"", tags:"", pinned:false },
   sortOrder:"newest",
-  health:null,
-  reindex:null,
-  reindexCursor:null,
-  debugLoading:null,
+  monthlyRollup:{loading:false,dryRun:null,result:null,error:""},
   showFilters:false,
   diaries:[],
   diaryPaging:{offset:0, hasMore:false},
@@ -225,24 +222,7 @@ function collectForm(){
     expires_at: $("#edit-expires")?.value || null
   };
 }
-async function runHealth(){
-  state.debugLoading = "health"; state.health = null; render();
-  try { state.health = await request("/v1/debug/vector_health"); }
-  catch(e){ state.health = { ok:false, error:e.message }; }
-  state.debugLoading = null; render();
-}
-async function runReindex(dryRun=true, cursor=state.reindexCursor){
-  if(!dryRun && !confirm("确认重嵌当前页？会消耗 embedding 配额并重写向量。")) return;
-  state.debugLoading = dryRun ? "dry" : "run"; render();
-  try {
-    const body = { namespace:"default", limit:50, dry_run:dryRun, ...(cursor ? { cursor } : {}) };
-    const data = await request("/v1/debug/vector_reindex", { method:"POST", body:JSON.stringify(body) });
-    state.reindex = data;
-    state.reindexCursor = data.data?.cursor || null;
-    toast(dryRun ? "Dry run 完成" : "重嵌当前页完成");
-  } catch(e){ state.reindex = { ok:false, error:e.message }; }
-  state.debugLoading = null; render();
-}
+
 function statusDot(){
   const cls = state.status === "connected" ? "good" : state.status === "testing" ? "warn" : state.status === "error" ? "bad" : "";
   const text = state.status === "connected" ? "已连接" : state.status === "testing" ? "测试中" : state.status === "error" ? "连接错误" : "未连接";
@@ -251,7 +231,7 @@ function statusDot(){
 function renderTop(){
   return '<div class="top">'+
     '<div class="brand"><div class="mark">A</div><div><b>Aelios</b><span>MEMORY · ADMIN</span></div></div>'+
-    '<div class="tabs"><button class="tab '+(state.tab==="memories"?"active":"")+'" data-tab="memories">记忆库</button><button class="tab '+(state.tab==="diaries"?"active":"")+'" data-tab="diaries">日记</button><button class="tab '+(state.tab==="emotion"?"active":"")+'" data-tab="emotion">情感地图</button><button class="tab '+(state.tab==="debug"?"active":"")+'" data-tab="debug">调试 · 维护</button></div>'+
+    '<div class="tabs"><button class="tab '+(state.tab==="memories"?"active":"")+'" data-tab="memories">记忆库</button><button class="tab '+(state.tab==="diaries"?"active":"")+'" data-tab="diaries">日记</button><button class="tab '+(state.tab==="emotion"?"active":"")+'" data-tab="emotion">情感地图</button><button class="tab '+(state.tab==="rollup"?"active":"")+'" data-tab="rollup">月度压缩</button></div>'+
     '<div class="cred"><input class="input worker mono" id="worker-url" placeholder="Worker URL" value="'+esc(state.workerUrl)+'"><input class="input key mono" id="api-key" type="password" placeholder="API Key" value="'+esc(state.apiKey)+'"></div>'+
     statusDot()+
     '<button class="btn primary" id="test-conn">测试连接</button>'+
@@ -316,13 +296,7 @@ function renderDetail(){
       '<div class="field"><div class="label">expires_at</div><input class="input mono" id="edit-expires" value="'+esc(m.expires_at || "")+'"></div>'+
     '</div><div class="actions">'+(isNew ? "" : '<button class="btn danger" id="delete-memory">删除</button>')+'<span class="grow"></span><button class="btn" id="reset-detail">取消</button><button class="btn primary" id="save-memory">'+(state.saving?"保存中":(isNew?"创建记忆":"保存修改"))+'</button></div></aside>';
 }
-function healthRows(){
-  const h = state.health;
-  if(!h) return '<div class="empty"><div><b>尚未运行</b><span>点击按钮运行健康检查。</span></div></div>';
-  if(h.error) return '<div class="hint" style="margin:12px;color:var(--bad)">'+esc(h.error)+'</div>';
-  const config = h.config || {};
-  const checks = h.checks || {};
-  const emb = checks.embedding || {};
+;
   const result = checks.result || {};
   const get = checks.get || {};
   const rows = [
@@ -340,58 +314,73 @@ function healthRows(){
   ];
   return rows.map(([k,v,ok])=>'<div class="kv"><span>'+esc(k)+'</span><b class="mono">'+esc(v ?? "—")+'</b>'+(ok===undefined?'<span></span>':'<span class="badge '+(ok?"good":"bad")+'">'+(ok?"ok":"fail")+'</span>')+'</div>').join("");
 }
-function reindexRows(){
-  const r = state.reindex;
-  if(!r) return '<div class="empty"><div><b>尚未运行</b><span>先 Dry run，再决定是否重嵌当前页。</span></div></div>';
-  if(r.error) return '<div class="hint" style="margin:12px;color:var(--bad)">'+esc(r.error)+'</div>';
-  const d = r.data || {};
-  return '<div class="stats">'+
-    '<div class="stat"><small>mode</small><b>'+esc(d.dry_run ? "DRY" : "RUN")+'</b></div>'+
-    '<div class="stat"><small>total</small><b>'+esc(d.total_count ?? "—")+'</b></div>'+
-    '<div class="stat"><small>rewritten</small><b>'+esc(d.rewritten_count ?? 0)+'</b></div>'+
-    '<div class="stat"><small>failed</small><b>'+esc(d.failed_count ?? 0)+'</b></div>'+
-    '<div class="stat"><small>has_more</small><b>'+esc(String(d.has_more))+'</b></div>'+
-  '</div>'+
-  [["embedding_model",d.embedding_model],["listed_ids",d.listed_ids],["matched_memories",d.matched_memories],["cursor",d.cursor || "—"],["failed[0]",d.failed?.[0]?.error || "—"]].map(([k,v])=>'<div class="kv"><span>'+esc(k)+'</span><b class="mono">'+esc(v)+'</b><span></span></div>').join("");
+
+function renderMonthlyRollup(){
+  const mr = state.monthlyRollup;
+  let body = '<main class="debug"><h1>月度压缩</h1><div class="meta">POST /admin/monthly-rollup · 将当月周刊合并为月度摘要</div>'+
+    '<section class="debug-card"><div class="debug-head"><b>Monthly Rollup</b><span class="grow"></span>'+
+    '<button class="btn" id="run-rollup-dry">'+(mr.loading&&mr.dryRun?'运行中':'Dry run')+'</button>'+
+    '<button class="btn danger" id="run-rollup-exec">'+(mr.loading&&!mr.dryRun?'压缩中':'执行压缩')+'</button></div>';
+  if(mr.error) body += '<div class="hint" style="margin:12px;color:var(--bad)">'+esc(mr.error)+'</div>';
+  if(mr.result){
+    const s = mr.result.data?.stats || {};
+    body += '<div class="stats">'+
+      '<div class="stat"><small>dry_run</small><b>'+esc(String(s.dry_run))+'</b></div>'+
+      '<div class="stat"><small>eligible</small><b>'+esc(s.months_eligible ?? "—")+'</b></div>'+
+      '<div class="stat"><small>processed</small><b>'+esc(s.months_processed ?? 0)+'</b></div>'+
+      '<div class="stat"><small>skipped</small><b>'+esc(s.months_skipped ?? 0)+'</b></div>'+
+    '</div>';
+    if(s.details && s.details.length){
+      body += '<div class="cards">';
+      s.details.forEach(function(d){
+        const badge = d.status==="rolled_up"?'<span class="badge good">rolled up</span>':
+          d.status==="skipped"?'<span class="badge">skipped</span>':
+          d.status==="error"?'<span class="badge bad">error</span>':
+          '<span class="badge">'+esc(d.status)+'</span>';
+        body += '<article class="card"><div class="card-top"><span class="type">month</span><span class="source">'+esc(d.month)+'</span>'+badge+'</div>'+
+          '<div class="content"><b>'+esc(d.title || "—")+'</b>\n'+esc((d.summary||d.reason||"").slice(0,300))+'</div></article>';
+      });
+      body += '</div>';
+    }
+  } else if(!mr.loading && !mr.error){
+    body += '<div class="empty"><div><b>尚未运行</b><span>Dry run 预览 → 确认无误后执行压缩。</span></div></div>';
+  }
+  body += '</section></main>';
+  return body;
 }
-function renderDebug(){
-  return '<main class="debug"><h1>调试 · 维护</h1><div class="meta">对向量链路做巡检，必要时按页重嵌。</div>'+
-    '<section class="debug-card"><div class="debug-head"><b>Vector Health</b><span class="meta">GET /v1/debug/vector_health</span><span class="grow"></span><button class="btn primary" id="run-health">'+(state.debugLoading==="health"?"运行中":"运行向量健康检查")+'</button></div>'+healthRows()+'</section>'+
-    '<section class="debug-card"><div class="debug-head"><b>Vector Reindex</b><span class="meta">POST /v1/debug/vector_reindex</span><span class="grow"></span><button class="btn" id="run-dry">'+(state.debugLoading==="dry"?"统计中":"Dry run")+'</button><button class="btn danger" id="run-reindex">'+(state.debugLoading==="run"?"重嵌中":"重嵌当前页")+'</button></div>'+reindexRows()+(state.reindex?.data?.has_more?'<div style="padding:12px"><button class="btn" id="reindex-next">下一页 cursor</button></div>':'')+'</section></main>';
+async function runMonthlyRollup(dryRun){
+  state.monthlyRollup = {loading:true,dryRun,result:null,error:""}; render();
+  try {
+    const body = { namespace:"default", dry_run: dryRun };
+    const data = await request("/admin/monthly-rollup", { method:"POST", body:JSON.stringify(body) });
+    state.monthlyRollup = {loading:false,dryRun,result:data,error:""};
+  } catch(e){ state.monthlyRollup = {loading:false,dryRun,result:null,error:e.message}; }
+  render();
 }
+
 async function loadDiaries(offset=0, append=false){
   state.loading = true; state.error = ""; if(!append) state.diaries = []; render(append);
   try {
-    const data = await request("/v1/diaries?namespace=default&limit=30&offset=" + offset);
-    const incoming = data.entries || [];
+    const data = await request("/admin/diary?namespace=default&limit=30");
+    const incoming = data.dailies || [];
     state.diaries = append ? [...state.diaries, ...incoming] : incoming;
-    state.diaryPaging = { offset: offset + incoming.length, hasMore: data.hasMore || false };
+    state.diaryPaging = { offset: offset + incoming.length, hasMore: false };
     state.status = "connected";
   } catch(e) { state.error = e.message; }
   state.loading = false; render(append);
 }
 function diaryCard(d){
-  const changes = d.memory_changes || {};
-  const badges = [];
-  if(changes.added) badges.push('<span class="badge good">+'+changes.added+'</span>');
-  if(changes.updated) badges.push('<span class="badge">~'+changes.updated+'</span>');
-  if(changes.deleted) badges.push('<span class="badge bad">-'+changes.deleted+'</span>');
-  if(changes.excerpts) badges.push('<span class="badge">excerpts '+changes.excerpts+'</span>');
-  if(changes.cleaned) badges.push('<span class="badge">cleaned '+changes.cleaned+'</span>');
-  const sections = Array.isArray(d.sections) ? d.sections : [];
-  const sectionPreviews = sections.slice(0,3).map(s=>'<div class="tag">'+esc((s.heading||"").slice(0,48) || "—")+'</div>').join("");
   return '<article class="card">'+
-    '<div class="card-top"><span class="type">diary</span><span class="source">'+esc(d.date_label || d.created_at?.slice(0,10) || "—")+'</span><span class="date">'+shortDate(d.created_at)+'</span></div>'+
+    '<div class="card-top"><span class="type">diary</span><span class="source">'+esc(d.date || "—")+'</span><span class="date">'+shortDate(d.updated_at)+'</span></div>'+
     '<div class="content"><b>'+esc(d.title || "—")+'</b>\n'+esc((d.summary || "").slice(0,300))+'</div>'+
-    '<div class="tags">'+sectionPreviews+badges.join("")+'</div>'+
   '</article>';
 }
 function renderDiaries(){
   return '<main class="debug">'+
-    '<div class="debug-head"><h1>日记</h1><span class="meta">GET /v1/diaries · 每日 digest 归档</span><span class="grow"></span><button class="btn" id="refresh-diaries">刷新</button></div>'+
+    '<div class="debug-head"><h1>日记</h1><span class="meta">GET /admin/diary · 每日摘要归档</span><span class="grow"></span><button class="btn" id="refresh-diaries">刷新</button></div>'+
     (state.error ? '<div class="hint" style="margin:12px;border-color:rgba(226,118,99,.5);color:var(--bad)">'+esc(state.error)+'</div>' : '')+
     (state.loading && !state.diaries.length ? '<div class="empty"><div><b>加载中</b><span class="mono">fetching diaries...</span></div></div>' :
-      state.diaries.length ? '<div class="cards">'+state.diaries.map(diaryCard).join("")+(state.diaryPaging.hasMore ? '<button class="btn" style="width:100%" id="load-more-diaries">继续加载 offset='+state.diaryPaging.offset+'</button>' : '')+'</div>' :
+      state.diaries.length ? '<div class="cards">'+state.diaries.map(diaryCard).join("") +'</div>' :
       '<div class="empty"><div><b>暂无日记</b><span>dailyDigest 运行后会自动生成日记条目。</span></div></div>')+
   '</main>';
 }
@@ -495,7 +484,6 @@ function captureScroll(){
     list: $(".list")?.scrollTop || 0,
     detail: $(".detail")?.scrollTop || 0,
     side: $(".side")?.scrollTop || 0,
-    debug: $(".debug")?.scrollTop || 0
   };
 }
 function restoreScroll(pos){
@@ -503,11 +491,10 @@ function restoreScroll(pos){
   const list = $(".list"); if(list) list.scrollTop = pos.list || 0;
   const detail = $(".detail"); if(detail) detail.scrollTop = pos.detail || 0;
   const side = $(".side"); if(side) side.scrollTop = pos.side || 0;
-  const debug = $(".debug"); if(debug) debug.scrollTop = pos.debug || 0;
 }
 function render(preserveScroll=true){
   const scroll = preserveScroll ? captureScroll() : null;
-  app.innerHTML = renderTop() + (state.tab === "debug" ? renderDebug() : state.tab === "diaries" ? renderDiaries() : state.tab === "emotion" ? renderEmotionMap() : '<div class="main">'+renderFilters()+renderList()+renderDetail()+'</div>') + (state.toast ? '<div class="toast">'+esc(state.toast)+'</div>' : "");
+  app.innerHTML = renderTop() + (state.tab === "rollup" ? renderMonthlyRollup() : state.tab === "diaries" ? renderDiaries() : state.tab === "emotion" ? renderEmotionMap() : '<div class="main">'+renderFilters()+renderList()+renderDetail()+'</div>') + (state.toast ? '<div class="toast">'+esc(state.toast)+'</div>' : "");
   bind();
   restoreScroll(scroll);
 }
@@ -538,14 +525,9 @@ function bind(){
   $("#delete-memory")?.addEventListener("click", ()=>deleteMemory(state.active?.id));
   $("#edit-importance")?.addEventListener("input", e=>{ $("#imp-val").textContent = Number(e.target.value).toFixed(2); });
   $("#edit-confidence")?.addEventListener("input", e=>{ $("#conf-val").textContent = Number(e.target.value).toFixed(2); });
-  $("#run-health")?.addEventListener("click", runHealth);
-  $("#run-dry")?.addEventListener("click", ()=>runReindex(true, null));
-  $("#run-reindex")?.addEventListener("click", ()=>runReindex(false, state.reindexCursor));
-  $("#reindex-next")?.addEventListener("click", ()=>runReindex(true, state.reindexCursor));
   $("#show-filter")?.addEventListener("click", ()=>{ state.showFilters = true; render(); });
   $("#close-filter")?.addEventListener("click", ()=>{ state.showFilters = false; render(); });
   $("#refresh-diaries")?.addEventListener("click", ()=>loadDiaries());
-  $("#load-more-diaries")?.addEventListener("click", ()=>loadDiaries(state.diaryPaging.offset, true));
   // emotion map canvas events
   const ec = document.getElementById("emotion-canvas");
   if(ec){
@@ -596,6 +578,8 @@ function bind(){
     setTimeout(()=>drawEmotionCanvas(state.emotionMap), 50);
   }
   $("#refresh-emotion")?.addEventListener("click", ()=>loadEmotionMap());
+  $("#run-rollup-dry")?.addEventListener("click", ()=>runMonthlyRollup(true));
+  $("#run-rollup-exec")?.addEventListener("click", ()=>runMonthlyRollup(false));
 }
 render();
 if(state.apiKey) { loadList(); loadDiaries(); }
