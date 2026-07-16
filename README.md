@@ -82,20 +82,16 @@ Aelios 是一个跑在 Cloudflare 上的记忆服务。你的 AI 客户端（Cha
 ## 管理面板（推荐用这个）
 
 有面板了，**日常管记忆不用敲命令**。浏览器打开：
-
 ```
 https://<你的 Worker 地址>/admin
 ```
-
-填入 Worker URL 和 API Key，进去就是可视化界面，底部 5 个标签：
+填入 Worker URL 和 API Key，进入可视化界面：
 
 | 标签 | 干什么 |
 |---|---|
-| **今日** | 今天聊了什么、昨日日志、今日消息、记忆类型统计，一眼看完 |
-| **审核队列** | dream 夜间整理和抽取的稳定事实会到这里，你点**通过 / 丢弃 / 合并 / 取代**，不让垃圾记忆污染记忆库 |
-| **重要记忆** | 所有长期记忆，按类型分页浏览、搜索、编辑、删除 |
-| **更多** | 珍贵记忆（只增不删的原文）、黑话表（术语别名）、世界知识、维护工具 |
-| **设置** | 主题、地址、密钥 |
+| **记忆库** | 顶部 4 个子导航：**搜索**（三栏：筛选 + 列表 + 详情编辑）、**珍贵**（高价值记忆卡片）、**术语**（黑话表：term + aliases + examples）、**候选**（pending 候选审批：批准/丢弃） |
+| **日记** | 按日期查看 AI 日记，支持重写 |
+| **情感地图** | 情感标记展示 |
 
 **想让 AI 记住什么、忘掉什么、改什么，都在面板点。** 不用调 API。
 
@@ -284,7 +280,6 @@ v2 暴露 14 个工具。`memory_create`、`digest_get`、`digest_set` 已废弃
 ## 记忆管线（v3）
 
 **写入：**
-
 ```
 agent 直写：memory_upsert / memory_supersede（MCP 或 REST）→ 直接落库
 dream 夜间（cron `10 20 * * *`）：
@@ -292,6 +287,10 @@ dream 夜间（cron `10 20 * * *`）：
   ├─ 合并/更新/删除建议 → 同样进 candidates（world_fact supersede 除外，直接落库）
   │   └─ dream_update 候选继承目标记忆的 fact_key（不再硬编码 null）
   ├─ 入队前 dedup gate 提示：向量相似命中且尚无 target → 写入 target_memory_id（不拦截）
+  ├─ 🆕 候选自动裁判（candidateJudge）：LLM 对 pending 候选打分（score/grounded/durable）
+  │   ├─ score≥0.8 + grounded + durable → 自动 approve 入库
+  │   ├─ score≤0.3 或 ungrounded → 自动 discard
+  │   └─ 中间值 → 保留 pending 人工复核（面板「候选」子视图）
   ├─ 重要原文摘录 → candidates
   ├─ 写 daily_log（title + summary）
   ├─ weekly rollup（daily_log → weekly_log）
@@ -366,7 +365,9 @@ hard delete: deleted/superseded/expired 超 30 天 → 先删 Vectorize 再删 D
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `CHAT_MODEL` | `deepseek/deepseek-v4-pro` | 主聊天 |
-| `DREAM_MODEL` | `workers-ai/@cf/openai/gpt-oss-120b` | 夜间 dream（抽取+整理） |
+| `DREAM_MODEL` | `deepseek/deepseek-v4-pro` | 夜间 dream（抽取+整理） |
+| `DIARY_MODEL` | 空（fallback DREAM_MODEL） | 日记生成专用模型 |
+| `JUDGE_MODEL` | 空（fallback DREAM_MODEL） | 🆕 候选自动裁判模型 |
 | `VISION_MODEL` | `workers-ai/@cf/google/gemma-4-26b-a4b-it` | 看图 |
 | `EMBEDDING_MODEL` | `workers-ai/@cf/baai/bge-m3` | 嵌入 |
 | `EMBEDDING_DIMENSIONS` | `1024` | 非 Workers AI embedding 目标维度 |
@@ -422,6 +423,10 @@ hard delete: deleted/superseded/expired 超 30 天 → 先删 Vectorize 再删 D
 | `DEBUG_API_KEY` | 空 | 调试接口钥匙 |
 | `MEMORY_MCP_API_KEY` | 空 | 纯记忆 MCP 单独钥匙 |
 | `GUIDE_DOG_API_KEY` | 空 | 导盲犬单独钥匙 |
+| `CANDIDATE_JUDGE_ENABLED` | 空（关闭） | 🆕 `true` 开启候选自动裁判 |
+| `JUDGE_MAX_CANDIDATES` | `20` | 每次裁判最多处理条数 |
+| `JUDGE_APPROVE_MIN` | `0.8` | 自动批准最低分 |
+| `JUDGE_DISCARD_MAX` | `0.3` | 自动丢弃最高分 |
 
 ## 本地开发与验证
 
