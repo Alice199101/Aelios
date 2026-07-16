@@ -312,11 +312,11 @@ async function processMonth(
     status: "skipped"
   };
 
-  if (weeklyLogs.length < 2) {
+  const existingMonthly = await getMonthlyLog(env.DB, { namespace, month });
+
+  if (!existingMonthly && weeklyLogs.length < 2) {
     return { ...baseDetail, status: "skipped", reason: "orphan_weeks", source_weeks: weeklyLogs.length };
   }
-
-  const existingMonthly = await getMonthlyLog(env.DB, { namespace, month });
 
   const prompt = buildMonthlyRollupPrompt({
     month,

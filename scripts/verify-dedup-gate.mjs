@@ -16,9 +16,15 @@ import { dirname, resolve } from "node:path";
 
 import { formatBootStable } from "../src/assembler/types.ts";
 import { createMemory, getMemoryById } from "../src/db/memories.ts";
-import { resolveMemoryFactKey, supersedeMemory, upsertMemoryByFactKey } from "../src/db/v2.ts";
+import {
+  getMonthlyLog,
+  getWeeklyLog,
+  resolveMemoryFactKey,
+  supersedeMemory,
+  upsertMemoryByFactKey
+} from "../src/db/v2.ts";
 import { findSimilarActiveMemory } from "../src/memory/dedupGate.ts";
-import { getMonthLabelForWeekStart } from "../src/memory/monthlyRollup.ts";
+import { getMonthLabelForWeekStart, runMonthlyRollup } from "../src/memory/monthlyRollup.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -83,7 +89,7 @@ assert.doesNotMatch(vectorStoreSource, /weekly_log/);
 assert.doesNotMatch(vectorStoreSource, /monthly_log/);
 
 assert.match(monthlyRollupSource, /export async function runMonthlyRollup/);
-assert.match(monthlyRollupSource, /weeklyLogs\.length < 2/);
+assert.match(monthlyRollupSource, /!existingMonthly && weeklyLogs\.length < 2/);
 assert.match(monthlyRollupSource, /DIARY_MODEL/);
 assert.match(monthlyRollupSource, /existingMonthly/);
 assert.match(monthlyRollupSource, /本月周记/);
@@ -132,7 +138,9 @@ function createMockD1() {
   const state = {
     memories: new Map(),
     lifecycle: new Map(),
-    relations: []
+    relations: [],
+    weeklyLogs: new Map(),
+    monthlyLogs: new Map()
   };
 
   function getById(id) {
@@ -343,6 +351,30 @@ function createMockD1() {
           });
           return { meta: { changes: 1 } };
         }
+        if (normalized.includes("INSERT INTO monthly_log")) {
+          const [namespace, month, title, summary, sourceWeekCount, createdAt, updatedAt] = binds;
+          const key = `${namespace}:${month}`;
+          const existing = state.monthlyLogs.get(key);
+          state.monthlyLogs.set(key, {
+            namespace,
+            month,
+            title,
+            summary,
+            source_week_count: sourceWeekCount,
+            created_at: existing?.created_at ?? createdAt,
+            updated_at: updatedAt
+          });
+          return { meta: { changes: 1 } };
+        }
+        if (normalized.startsWith("DELETE FROM weekly_log")) {
+          const [namespace, ...weeks] = binds;
+          let changes = 0;
+          for (const week of weeks) {
+            const key = `${namespace}:${week}`;
+            if (state.weeklyLogs.delete(key)) changes += 1;
+          }
+          return { meta: { changes } };
+        }
         return { meta: { changes: 0 } };
       },
       async first() {
@@ -384,12 +416,29 @@ function createMockD1() {
           const row = findActiveByFactKey(namespace, factKey);
           return row ? { id: row.id } : null;
         }
+        if (normalized.includes("FROM monthly_log") && normalized.includes("month = ?")) {
+          const [namespace, month] = binds;
+          const row = state.monthlyLogs.get(`${namespace}:${month}`);
+          return row ? { ...row } : null;
+        }
+        if (normalized.includes("FROM weekly_log") && normalized.includes("week = ?")) {
+          const [namespace, week] = binds;
+          const row = state.weeklyLogs.get(`${namespace}:${week}`);
+          return row ? { ...row } : null;
+        }
         return null;
       },
       async all() {
         if (normalized.startsWith("SELECT * FROM memories WHERE namespace = ? AND id = ?")) {
           const first = await stmt.first();
           return { results: first ? [first] : [] };
+        }
+        if (normalized.includes("FROM weekly_log") && normalized.includes("start_date < ?")) {
+          const [namespace, beforeStartDate] = binds;
+          const results = [...state.weeklyLogs.values()]
+            .filter((row) => row.namespace === namespace && row.start_date < beforeStartDate)
+            .sort((a, b) => a.start_date.localeCompare(b.start_date));
+          return { results };
         }
         return { results: [] };
       }
@@ -459,6 +508,49 @@ function makeEnv(overrides = {}) {
   delete env.vectorMatches;
   delete env.vectorizeThrows;
   return env;
+}
+
+function seedWeeklyLog(db, input) {
+  const namespace = input.namespace ?? "default";
+  const week = input.week;
+  db._state.weeklyLogs.set(`${namespace}:${week}`, {
+    namespace,
+    week,
+    start_date: input.start_date,
+    end_date: input.end_date ?? input.start_date,
+    title: input.title ?? "",
+    summary: input.summary ?? "",
+    source_days: input.source_days ?? 1,
+    updated_at: input.updated_at ?? NOW
+  });
+}
+
+function seedMonthlyLog(db, input) {
+  const namespace = input.namespace ?? "default";
+  const month = input.month;
+  db._state.monthlyLogs.set(`${namespace}:${month}`, {
+    namespace,
+    month,
+    title: input.title ?? "",
+    summary: input.summary ?? "",
+    source_week_count: input.source_week_count ?? 2,
+    created_at: input.created_at ?? NOW,
+    updated_at: input.updated_at ?? NOW
+  });
+}
+
+function makeMonthlyRollupEnv(overrides = {}) {
+  const rollupJson = JSON.stringify({
+    title: overrides.rollupTitle ?? "五月印象",
+    summary: overrides.rollupSummary ?? "这个月延续了之前的氛围，并吸收了新的周记线索。"
+  });
+  return makeEnv({
+    DREAM_TIME_ZONE: "Asia/Shanghai",
+    AI: {
+      run: async () => ({ response: rollupJson })
+    },
+    ...overrides
+  });
 }
 
 function seedMemory(db, input) {
@@ -752,6 +844,64 @@ async function approveCandidate(env, candidate, body = {}) {
   });
   const blocked = await resolveMemoryFactKey(env, "mem_superseded", "default");
   assert.equal(blocked, null);
+}
+
+// ---------------------------------------------------------------------------
+// Monthly rollup orphan guard (real runMonthlyRollup + D1 mock)
+// ---------------------------------------------------------------------------
+
+{
+  const env = makeMonthlyRollupEnv();
+  seedWeeklyLog(env.DB, {
+    week: "2026-W20",
+    start_date: "2026-05-11",
+    title: "orphan",
+    summary: "single week without monthly"
+  });
+
+  const stats = await runMonthlyRollup(env, "default");
+  const detail = stats.details.find((item) => item.month === "2026-05");
+  assert.ok(detail);
+  assert.equal(detail.status, "skipped");
+  assert.equal(detail.reason, "orphan_weeks");
+  assert.equal(detail.source_weeks, 1);
+
+  const retained = await getWeeklyLog(env.DB, { namespace: "default", week: "2026-W20" });
+  assert.ok(retained);
+  assert.equal(await getMonthlyLog(env.DB, { namespace: "default", month: "2026-05" }), null);
+}
+
+{
+  const env = makeMonthlyRollupEnv({
+    rollupTitle: "五月刷新",
+    rollupSummary: "已有月记吸收了迟到的单周线索。"
+  });
+  seedMonthlyLog(env.DB, {
+    month: "2026-05",
+    title: "旧五月",
+    summary: "先前月度印象。",
+    source_week_count: 2
+  });
+  seedWeeklyLog(env.DB, {
+    week: "2026-W20",
+    start_date: "2026-05-11",
+    title: "straggler",
+    summary: "late week to merge"
+  });
+
+  const stats = await runMonthlyRollup(env, "default");
+  const detail = stats.details.find((item) => item.month === "2026-05");
+  assert.ok(detail);
+  assert.equal(detail.status, "rolled_up");
+  assert.equal(detail.source_weeks, 1);
+  assert.equal(detail.deleted_weeks, 1);
+
+  const merged = await getMonthlyLog(env.DB, { namespace: "default", month: "2026-05" });
+  assert.ok(merged);
+  assert.equal(merged.title, "五月刷新");
+  assert.equal(merged.summary, "已有月记吸收了迟到的单周线索。");
+  assert.equal(merged.source_week_count, 1);
+  assert.equal(await getWeeklyLog(env.DB, { namespace: "default", week: "2026-W20" }), null);
 }
 
 // ---------------------------------------------------------------------------
