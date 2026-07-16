@@ -13,6 +13,7 @@
 import {
   getDailyLog,
   listPrecious,
+  type PreciousRow,
   listGlossary,
   listRecentMonthlyLogs,
   listRecentWeeklyLogs,
@@ -155,7 +156,7 @@ const BOOT_SCHEMA_VERSION = "v3-1";
 
 export async function buildBootPackage(
   env: Env,
-  input: { namespace: string }
+  input: { namespace: string; preciousRows?: PreciousRow[] }
 ): Promise<BootPackage> {
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const bootTimeZone = env.DREAM_TIME_ZONE || "Asia/Shanghai";
@@ -165,7 +166,9 @@ export async function buildBootPackage(
   }).format(yesterday);
 
   const [preciousRows, allGlossary, dailyLog, weeklyRows, monthlyRows, spontaneous] = await Promise.all([
-    listPrecious(env.DB, { namespace: input.namespace, limit: 20 }),
+    input.preciousRows
+      ? Promise.resolve(input.preciousRows)
+      : listPrecious(env.DB, { namespace: input.namespace, limit: 20 }),
     listAllGlossary(env, input.namespace),
     getDailyLog(env.DB, { namespace: input.namespace, date: yesterdayLabel }),
     listRecentWeeklyLogs(env.DB, { namespace: input.namespace, limit: 1 }),
@@ -179,7 +182,8 @@ export async function buildBootPackage(
   // 确定性排序: precious 按 created_at 升序 (老的在前，稳定的在前)。
   const precious = preciousRows
     .map((r) => ({ id: r.id, content: r.content, created_at: r.created_at }))
-    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+    .sort((a, b) => a.created_at.localeCompare(b.created_at))
+    .slice(0, 20);
 
   // 闸三对 precious 也记账: boot 被调 = precious 被注入, 记 last_injected_at。
   // 防的是某条 precious 因太相关而被 recall 侧逻辑反复塞 (虽然闸一已把 precious 移出
