@@ -11,7 +11,7 @@
 
 - **main**：唯一主线，作者线上跑的就是这套（v2 记忆系统：六层分层、三档写入、v4 assembler 缓存、boot 包 + 召回三闸）。AGPL-3.0。
 - **memory-v2 分支已退役**：内容已全部并入 main，不再更新，历史留档。老用户如果 Cloudflare 构建还指着 memory-v2，把 Production branch 切回 main 即可，数据不用迁。
-- **tg-bot**：Telegram bot 集成分支，叠在主线上，部署方式见其分支文档。
+- **tg-bot**：Telegram bot 集成分支（TWIN-WORKER：部署独立 worker `aelios-tgbot`，共享同一 D1/Vectorize），叠在主线上。部署方式点这里：[docs/telegram-bot.md（tg-bot 分支）](https://github.com/wusaki0723/Aelios/blob/tg-bot/docs/telegram-bot.md)。
 
 ## 想用 v1 最终版？
 
