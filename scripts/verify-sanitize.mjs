@@ -1,6 +1,6 @@
 /**
  * Byte-identical parity check for extracted sanitize helpers vs inlined legacy copies.
- * Run: node scripts/verify-sanitize.mjs
+ * Run: npx tsx scripts/verify-sanitize.mjs
  */
 
 function legacyContentToText(content) {
