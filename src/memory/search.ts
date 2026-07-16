@@ -341,7 +341,7 @@ async function searchWithVectorize(
     : Math.max(0, Math.min(input.topK - d1Records.length, legacyFallbackLimit));
   const legacyOnlyRecords = legacySlots > 0
     ? legacyCandidates
-      .sort((a, b) => b.score + b.importance * 0.05 - (a.score + a.importance * 0.05))
+      .sort((a, b) => b.score + b.importance * 0.05 + ((b.decay_score as number) ?? 0) * 0.1 - (a.score + a.importance * 0.05 + ((a.decay_score as number) ?? 0) * 0.1))
       .slice(0, legacySlots)
       .map((record) => ({
         ...record,
@@ -353,7 +353,7 @@ async function searchWithVectorize(
   const unbackedDropped = requireD1Backing ? legacyCandidates.length : 0;
 
   const records = [...d1Records, ...legacyOnlyRecords].sort(
-    (a, b) => b.score + b.importance * 0.05 - (a.score + a.importance * 0.05)
+    (a, b) => b.score + b.importance * 0.05 + ((b.decay_score as number) ?? 0) * 0.1 - (a.score + a.importance * 0.05 + ((a.decay_score as number) ?? 0) * 0.1)
   ).slice(0, input.topK);
 
   return { records, lifecycleByMemoryId, unbackedDropped };

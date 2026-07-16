@@ -235,6 +235,7 @@ export interface MemoryRecord {
   vector_id: string | null;
   last_recalled_at: string | null;
   recall_count: number;
+  decay_score?: number | null;
   created_at: string;
   updated_at: string;
   expires_at: string | null;
