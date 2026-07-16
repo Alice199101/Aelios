@@ -83,6 +83,7 @@ export interface Env {
   GITHUB_DAILY_NAMESPACE?: string;
   GITHUB_DAILY_TOKEN?: string;
   EMPTY_MEMORY_MIN_CHARS?: string;
+  MESSAGES_RETENTION_DAYS?: string;
   MEMORY_MODE?: string;
   ENABLE_MEMORY_FILTER?: string;
   ENABLE_MEMORY_RERANKER?: string;

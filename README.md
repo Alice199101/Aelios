@@ -335,7 +335,7 @@ cmh-lite 客户端每天 23:50（本地时区）会把 `archive/daily/YYYY-MM-DD
 **清理（后台 Queue，24h 节流）：**
 
 ```
-messages: 14 天删
+messages: 7 天删（可用 `MESSAGES_RETENTION_DAYS` 配置）
 usage_logs: 30 天删
 memory_events: 30 天删
 idempotency_keys: 7 天删
