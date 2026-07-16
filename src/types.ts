@@ -117,22 +117,12 @@ export interface Env {
   CACHE_MAX_VALUE_BYTES?: string;
 }
 
-export interface MemoryMaintenanceQueueMessage {
-  type: "memory_maintenance";
-  namespace: string;
-  conversationId: string;
-  fromMessageId: string;
-  toMessageId: string;
-  source: string;
-  idempotencyKey: string;
-}
-
 export interface RetentionQueueMessage {
   type: "retention";
   namespace: string;
 }
 
-export type QueueMessage = MemoryMaintenanceQueueMessage | RetentionQueueMessage;
+export type QueueMessage = RetentionQueueMessage;
 
 export type Scope =
   | "chat:proxy"

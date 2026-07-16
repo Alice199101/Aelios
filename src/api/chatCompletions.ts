@@ -10,7 +10,7 @@ import {
 } from "../memory/inject";
 import { searchMemories } from "../memory/search";
 import { assemble } from "../assembler/assemble";
-import { enqueueMemoryMaintenanceIfNeeded, enqueueRetentionIfNeeded } from "../queue/producer";
+import { enqueueRetentionIfNeeded } from "../queue/producer";
 import { listPrecious } from "../db/v2";
 import { buildBootPackage, buildCoreFingerprint, isV2Enabled, runRecall } from "../memory/v2/recall";
 import {
@@ -304,13 +304,6 @@ export async function handleChatCompletions(
           clientSystemHash,
           cacheAnchorBlock
         }),
-        enqueueMemoryMaintenanceIfNeeded(env, {
-          namespace: auth.profile.namespace,
-          conversationId: conversation.id,
-          fromMessageId: latestUserMessageId,
-          toMessageId: assistantMessageId,
-          source: auth.profile.source
-        }),
         enqueueRetentionIfNeeded(env, auth.profile.namespace)
       ])
     );
@@ -359,13 +352,6 @@ export async function handleChatCompletions(
         usage: parsed.usage,
         clientSystemHash,
         cacheAnchorBlock
-      }),
-      enqueueMemoryMaintenanceIfNeeded(env, {
-        namespace: auth.profile.namespace,
-        conversationId: conversation.id,
-        fromMessageId: latestUserMessageId,
-        toMessageId: assistantMessageId,
-        source: auth.profile.source
       }),
       enqueueRetentionIfNeeded(env, auth.profile.namespace)
     ])
