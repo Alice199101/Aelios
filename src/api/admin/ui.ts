@@ -299,24 +299,6 @@ function renderDetail(){
     '</div><div class="actions">'+(isNew ? "" : '<button class="btn danger" id="delete-memory">删除</button>')+'<span class="grow"></span><button class="btn" id="reset-detail">取消</button><button class="btn primary" id="save-memory">'+(state.saving?"保存中":(isNew?"创建记忆":"保存修改"))+'</button></div></aside>';
 }
 ;
-  const result = checks.result || {};
-  const get = checks.get || {};
-  const rows = [
-    ["ok", String(h.ok), h.ok],
-    ["embedding_model", config.embedding_model],
-    ["embedding_provider", config.embedding_provider],
-    ["dimensions", emb.dimensions],
-    ["norm", emb.norm],
-    ["vectorize_index_name", config.vectorize_index_name],
-    ["has_ai_binding", String(config.has_ai_binding), config.has_ai_binding],
-    ["has_vectorize_binding", String(config.has_vectorize_binding), config.has_vectorize_binding],
-    ["canary.reason", result.reason, result.ok],
-    ["canary.attempts", get.attempts],
-    ["api_search.count", checks.api_search?.count]
-  ];
-  return rows.map(([k,v,ok])=>'<div class="kv"><span>'+esc(k)+'</span><b class="mono">'+esc(v ?? "—")+'</b>'+(ok===undefined?'<span></span>':'<span class="badge '+(ok?"good":"bad")+'">'+(ok?"ok":"fail")+'</span>')+'</div>').join("");
-}
-
 function renderRollupResult(label, rr, runFn){
   if(!rr.result && !rr.loading && !rr.error) return '';
   let h = '<section class="debug-card" style="margin-top:12px"><div class="debug-head"><b>'+esc(label)+'</b><span class="grow"></span>'+
