@@ -37,11 +37,10 @@ export async function saveUserMessages(
     const content = contentToText(message.content);
     const id = newId("msg");
     const hash = await sha256Hex(`${input.conversationId}:${message.role}:${normalizeContent(content)}`);
-    ids.push(id);
 
-    await db
+    const result = await db
       .prepare(
-        `INSERT INTO messages (
+        `INSERT OR IGNORE INTO messages (
           id, conversation_id, namespace, role, content, source, client_message_hash,
           upstream_model, upstream_provider, request_model, stream, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -61,6 +60,17 @@ export async function saveUserMessages(
         nowIso()
       )
       .run();
+
+    // Duplicate hash (client retry): return the existing row id so callers still get a valid message id.
+    if ((result.meta.changes ?? 0) === 0) {
+      const existing = await db
+        .prepare(`SELECT id FROM messages WHERE client_message_hash = ? LIMIT 1`)
+        .bind(hash)
+        .first<{ id: string }>();
+      ids.push(existing?.id ?? id);
+    } else {
+      ids.push(id);
+    }
   }
 
   return ids;
