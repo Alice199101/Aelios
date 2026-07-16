@@ -389,7 +389,6 @@ hard delete: deleted/superseded/expired 超 30 天 → 先删 Vectorize 再删 D
 | `DREAM_MAX_RUNS` | `10` | 每次 cron 最多 dream 批数 |
 | `DREAM_MAX_TOKENS` | `8000` | dream 输出上限 |
 | `DREAM_MEMORY_CONTEXT_LIMIT` | `40` | dream 参考旧记忆数 |
-| `DREAM_EXCERPT_LIMIT` | `8` | 每天最多原文段落数 |
 | `GITHUB_DAILY_REPO` | 空 | GitHub daily 源仓库，`owner/repo`；空 = 禁用 |
 | `GITHUB_DAILY_PATH` | `archive/daily` | daily markdown 目录 |
 | `GITHUB_DAILY_NAMESPACE` | 空 | 入库 namespace，默认跟 `DREAM_NAMESPACE` |
