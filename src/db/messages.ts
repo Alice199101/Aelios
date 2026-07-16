@@ -10,8 +10,8 @@ function contentToText(content: OpenAIChatMessage["content"]): string {
 }
 
 // Stable-hash normalization: trim + collapse whitespace so retrying the same
-// (conversationId, role, content) yields an identical hash. The DB id stays
-// random; only the hash drops it — that is what makes the hash idempotent.
+// (conversationId, role, content, bucket) yields an identical hash. The DB id
+// stays random; only the hash drops it — that is what makes the hash idempotent.
 function normalizeContent(content: string): string {
   return content.replace(/\s+/g, " ").trim();
 }
@@ -36,7 +36,13 @@ export async function saveUserMessages(
   for (const message of userMessages) {
     const content = contentToText(message.content);
     const id = newId("msg");
-    const hash = await sha256Hex(`${input.conversationId}:${message.role}:${normalizeContent(content)}`);
+    // 10-minute time bucket: conversations are eternal (`${namespace}:default`),
+    // so content-only hashes would collide on every legitimate repeat of the same
+    // text. Same-bucket client retries (seconds apart) still dedupe; a retry that
+    // straddles a bucket boundary may insert a duplicate — accepted, rare, and
+    // strictly better than dropping real messages.
+    const bucket = Math.floor(Date.now() / 600_000);
+    const hash = await sha256Hex(`${input.conversationId}:${message.role}:${normalizeContent(content)}:${bucket}`);
 
     const result = await db
       .prepare(
