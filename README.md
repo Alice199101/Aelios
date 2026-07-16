@@ -149,7 +149,7 @@ Hook 只需要你的 Aelios Worker 地址和 `CHATBOX_API_KEY`，不需要任何
 
 默认链路不需要 AI Gateway、不需要第三方模型 key：embedding + reranker + dream（每天一次）都跑 Workers AI。部署时填好 `CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_API_TOKEN`、`CHATBOX_API_KEY` 就能记、能召、能夜间整理。
 
-Workers AI 免费额度主要花在每日一次的 dream（默认 `llama-3.3-70b`）和偶尔的 reranker/embedding 上——**不再有每轮聊天的压缩模型**，额度压力小很多。真要换 `EMBEDDING_MODEL` 注意维度会变（需重建 Vectorize 索引，面板「更多 → 维护」里有工具）。
+Workers AI 免费额度主要花在每日一次的 dream（默认 `gpt-oss-120b`）和偶尔的 reranker/embedding 上——**不再有每轮聊天的压缩模型**，额度压力小很多。真要换 `EMBEDDING_MODEL` 注意维度会变（需重建 Vectorize 索引，面板「更多 → 维护」里有工具）。
 
 ## 最容易踩的坑
 
@@ -210,7 +210,7 @@ workers-ai/@cf/...         → env.AI.run（不走 AI Gateway）
 
 **OpenRouter + Claude 路由约束**：OpenRouter 调 Claude 必须在 AI Gateway 里以 **custom-provider** 方式加 key，不能走官方 provider 路径。官方路径按 Anthropic 原生格式发请求，与 OpenRouter 的 OpenAI 兼容格式冲突，会破坏缓存和格式。模型名走 `custom-provider/claude-*` → Provider native 分支。
 
-**Workers AI 额度**：v3 召回链路只有 embedding + reranker（每轮，用量小）+ dream（每日一次，默认 `llama-3.3-70b`），共享 Workers AI 免费额度。不再有 per-turn 压缩模型。换 `EMBEDDING_MODEL` 会改维度，需重建 Vectorize 索引。
+**Workers AI 额度**：v3 召回链路只有 embedding + reranker（每轮，用量小）+ dream（每日一次，默认 `gpt-oss-120b`），共享 Workers AI 免费额度。不再有 per-turn 压缩模型。换 `EMBEDDING_MODEL` 会改维度，需重建 Vectorize 索引。
 
 ## REST 端点
 
@@ -366,8 +366,8 @@ hard delete: deleted/superseded/expired 超 30 天 → 先删 Vectorize 再删 D
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `CHAT_MODEL` | `deepseek/deepseek-v4-pro` | 主聊天 |
-| `DREAM_MODEL` | `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast` | 夜间 dream（抽取+整理） |
-| `VISION_MODEL` | `google-ai-studio/gemini-3-flash-preview` | 看图 |
+| `DREAM_MODEL` | `workers-ai/@cf/openai/gpt-oss-120b` | 夜间 dream（抽取+整理） |
+| `VISION_MODEL` | `workers-ai/@cf/google/gemma-4-26b-a4b-it` | 看图 |
 | `EMBEDDING_MODEL` | `workers-ai/@cf/baai/bge-m3` | 嵌入 |
 | `EMBEDDING_DIMENSIONS` | `1024` | 非 Workers AI embedding 目标维度 |
 | `MEMORY_RERANKER_MODEL` | `workers-ai/@cf/baai/bge-reranker-base` | reranker |
