@@ -36,6 +36,7 @@ button,input,textarea,select{font:inherit;color:inherit} button{cursor:pointer} 
 .empty{height:100%;min-height:260px;display:grid;place-items:center;color:var(--muted);text-align:center;padding:24px}.empty b{display:block;color:var(--text);margin-bottom:5px}
 .detail-head{height:48px;display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2}.detail-body{padding:14px;display:grid;gap:13px}.row{display:grid;grid-template-columns:110px 1fr;gap:9px;align-items:center;border-bottom:1px solid var(--line);padding:6px 0}.row label{font:11px var(--mono);color:var(--muted)}.field{display:grid;gap:5px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.slider{accent-color:var(--accent);width:100%}.actions{position:sticky;bottom:0;background:var(--bg);border-top:1px solid var(--line);padding:10px 14px;display:flex;gap:8px;justify-content:flex-end}
 .debug{overflow:auto;padding:22px;max-width:1040px;margin:0 auto;width:100%}.debug h1{font-size:18px;margin:0 0 5px}.debug-card{border:1px solid var(--line);background:var(--panel);border-radius:8px;margin:16px 0;overflow:hidden}.debug-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}.kv{display:grid;grid-template-columns:220px 1fr auto;border-bottom:1px solid var(--line);padding:8px 12px;gap:10px}.kv span:first-child{color:var(--muted);font-family:var(--mono);font-size:11px}.badge{font:11px var(--mono);border-radius:4px;padding:2px 6px;background:var(--panel3);color:var(--muted)}.badge.good{background:rgba(116,199,153,.12);color:var(--good)}.badge.bad{background:rgba(226,118,99,.13);color:var(--bad)}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));border-bottom:1px solid var(--line)}.stat{padding:11px;border-right:1px solid var(--line)}.stat small{display:block;color:var(--muted);font:11px var(--mono);text-transform:uppercase}.stat b{display:block;font-size:18px;margin-top:3px}.toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:20;padding:10px 13px;border:1px solid var(--line2);background:var(--panel2);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+.subnav{display:flex;gap:4px;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel)}.subtab{height:30px;border:1px solid var(--line);background:var(--panel2);color:var(--muted);border-radius:6px;padding:0 12px}.subtab.active{background:var(--accent2);color:var(--accent);border-color:var(--accent)}
 .mobile-filter,.mobile-close{display:none}
 @media(max-width:980px){.main{grid-template-columns:1fr}.side{display:none}.side.mobile-open{display:block;position:absolute;inset:0 auto 0 0;width:min(86vw,320px);z-index:12;box-shadow:0 20px 60px rgba(0,0,0,.45)}.detail{position:absolute;inset:0;background:var(--bg);z-index:5}.detail.empty-detail{display:none}.mobile-filter,.mobile-close{display:inline-flex}.cred .key{width:150px}.brand span{display:none}}
 @media(max-width:640px){.app{grid-template-rows:auto minmax(0,1fr)}.top{height:auto;display:grid;grid-template-columns:1fr auto auto;gap:7px}.brand{grid-column:1/4}.cred{grid-column:1/4}.status{grid-column:1/2}.tabs{display:none}.main{height:auto}.key{width:110px!important}#test-conn{grid-column:2/3}#theme-toggle{grid-column:3/4}.toolbar{height:auto;flex-wrap:wrap}.content{-webkit-line-clamp:5}.grid2{grid-template-columns:1fr}.kv{grid-template-columns:1fr}.row{grid-template-columns:1fr}.debug{padding:12px}.debug-head{flex-wrap:wrap}}
@@ -73,6 +74,10 @@ const state = {
   emotionMapHover:null,
   emotionMapSelected:null,
   _emotionPoints:[],
+  memoriesSubTab:"search",
+  precious:[],
+  glossary:[],
+  candidates:[],
 };
 document.documentElement.dataset.theme = state.theme;
 
@@ -97,7 +102,7 @@ async function request(path, options={}){
 }
 async function testConnection(){
   state.status = "testing"; state.error = ""; savePrefs(); render();
-  try { await request("/v1/memory?limit=1"); state.status = "connected"; toast("连接成功"); await loadList(); loadDiaries(); }
+  try { await request("/v1/memory?limit=1"); state.status = "connected"; toast("连接成功"); await loadList(); loadDiaries(); loadPrecious(); }
   catch(e){ state.status = "error"; state.error = e.message; render(); }
 }
 function setFilter(key, value){ state.filters[key] = value; render(); }
@@ -125,6 +130,46 @@ async function loadList(cursor=null, append=false){
     state.status = "connected";
   } catch(e) { state.error = e.message; state.status = state.status === "idle" ? "error" : state.status; }
   state.loading = false; render(append);
+}
+async function loadPrecious(){
+  state.loading = true; state.error = ""; render();
+  try {
+    const data = await request("/v1/precious?namespace=default&limit=100");
+    state.precious = data.data || [];
+  } catch(e) { state.error = e.message; }
+  state.loading = false; render();
+}
+async function loadGlossary(){
+  state.loading = true; state.error = ""; render();
+  try {
+    const data = await request("/v1/glossary?namespace=default");
+    state.glossary = data.data || [];
+  } catch(e) { state.error = e.message; }
+  state.loading = false; render();
+}
+async function loadCandidates(){
+  state.loading = true; state.error = ""; render();
+  try {
+    const data = await request("/v1/candidates?namespace=default&status=pending&limit=100");
+    state.candidates = data.data || [];
+  } catch(e) { state.error = e.message; }
+  state.loading = false; render();
+}
+async function approveCandidate(id){
+  try {
+    await request("/v1/candidates/" + encodeURIComponent(id) + "/approve", { method:"POST" });
+    state.candidates = state.candidates.filter(c => c.id !== id);
+    toast("已批准 → 记忆库");
+  } catch(e) { toast("批准失败: " + e.message); }
+  render();
+}
+async function discardCandidate(id){
+  try {
+    await request("/v1/candidates/" + encodeURIComponent(id) + "/discard", { method:"POST" });
+    state.candidates = state.candidates.filter(c => c.id !== id);
+    toast("已丢弃");
+  } catch(e) { toast("丢弃失败: " + e.message); }
+  render();
 }
 async function searchMemories(){
   if(!state.filters.query.trim()){ await loadList(); return; }
@@ -252,6 +297,89 @@ function renderFilters(){
     '<div class="section"><div class="label">tags</div><input class="input" id="tags-filter" placeholder="逗号或空格分隔" value="'+esc(state.filters.tags)+'"></div>'+
     '<div class="section"><label class="check"><input type="checkbox" id="pinned-filter" '+(state.filters.pinned?"checked":"")+'>仅显示 pinned</label></div>'+
   '</aside>';
+}
+function renderMemoriesSubNav(){
+  const subs = [
+    { key:"search", label:"搜索" },
+    { key:"precious", label:"珍贵"+(state.precious.length?" ("+state.precious.length+")":"") },
+    { key:"glossary", label:"术语"+(state.glossary.length?" ("+state.glossary.length+")":"") },
+    { key:"candidates", label:"候选"+(state.candidates.length?" ("+state.candidates.length+")":"") }
+  ];
+  return '<div class="subnav">'+subs.map(s=>'<button class="subtab '+(state.memoriesSubTab===s.key?"active":"")+'" data-subtab="'+s.key+'">'+esc(s.label)+'</button>').join("")+'</div>';
+}
+function renderMemories(){
+  let content;
+  if(state.memoriesSubTab === "search"){
+    content = '<div class="main">'+renderFilters()+renderList()+renderDetail()+'</div>';
+  } else if(state.memoriesSubTab === "precious"){
+    content = renderPreciousContent();
+  } else if(state.memoriesSubTab === "glossary"){
+    content = renderGlossaryContent();
+  } else if(state.memoriesSubTab === "candidates"){
+    content = renderCandidatesContent();
+  }
+  return renderMemoriesSubNav() + content;
+}
+function renderPreciousContent(){
+  let h = '<main class="debug">'+
+    '<div class="debug-head"><h1>珍贵记忆</h1><span class="meta">GET /v1/precious</span><span class="grow"></span><button class="btn" id="refresh-precious">刷新</button></div>';
+  if(state.error) h += '<div class="hint" style="margin:12px;border-color:rgba(226,118,99,.5);color:var(--bad)">'+esc(state.error)+'</div>';
+  if(state.loading && !state.precious.length){
+    h += '<div class="empty"><div><b>加载中</b><span class="mono">fetching precious memories...</span></div></div>';
+  } else if(state.precious.length){
+    h += '<div class="cards">'+state.precious.map(p=>'<article class="card"><div class="card-top"><span class="type">precious</span><span class="source">'+esc(p.source||"—")+'</span><span class="date">'+shortDate(p.created_at)+'</span></div><div class="content" style="-webkit-line-clamp:8">'+esc(p.content)+'</div><div class="tags"><span class="tag mono">'+esc(p.id)+'</span></div></article>').join("")+'</div>';
+  } else {
+    h += '<div class="empty"><div><b>暂无珍贵记忆</b><span>当小秘书识别到高价值记忆时会出现在这里。</span></div></div>';
+  }
+  h += '</main>';
+  return h;
+}
+function renderGlossaryContent(){
+  let h = '<main class="debug">'+
+    '<div class="debug-head"><h1>黑话术语</h1><span class="meta">GET /v1/glossary</span><span class="grow"></span><button class="btn" id="refresh-glossary">刷新</button></div>';
+  if(state.error) h += '<div class="hint" style="margin:12px;border-color:rgba(226,118,99,.5);color:var(--bad)">'+esc(state.error)+'</div>';
+  if(state.loading && !state.glossary.length){
+    h += '<div class="empty"><div><b>加载中</b><span class="mono">fetching glossary...</span></div></div>';
+  } else if(state.glossary.length){
+    h += '<div style="padding:8px">';
+    state.glossary.forEach(g=>{
+      const aliases = (g.aliases||[]).length ? '<div class="tags" style="margin-top:4px">'+g.aliases.map(a=>'<span class="tag">别名: '+esc(a)+'</span>').join("")+'</div>' : '';
+      const examples = g.examples ? '<div style="margin-top:4px;font-size:12px;color:var(--muted)">例: '+esc(String(g.examples).slice(0,120))+'</div>' : '';
+      h += '<div style="border:1px solid var(--line);background:var(--panel);border-radius:7px;margin-bottom:8px;padding:10px">'+
+        '<div class="card-top"><span class="type">term</span><b>'+esc(g.term)+'</b><span class="scores">'+esc(g.status||"active")+'</span></div>'+
+        '<div style="margin-top:6px;white-space:pre-wrap">'+esc(g.definition||"—")+'</div>'+
+        aliases+examples+
+      '</div>';
+    });
+    h += '</div>';
+  } else {
+    h += '<div class="empty"><div><b>暂无术语</b><span>当小秘书学习到新的黑话/术语时会出现在这里。</span></div></div>';
+  }
+  h += '</main>';
+  return h;
+}
+function renderCandidatesContent(){
+  let h = '<main class="debug">'+
+    '<div class="debug-head"><h1>候选记忆</h1><span class="meta">GET /v1/candidates</span><span class="grow"></span><button class="btn" id="refresh-candidates">刷新</button></div>';
+  if(state.error) h += '<div class="hint" style="margin:12px;border-color:rgba(226,118,99,.5);color:var(--bad)">'+esc(state.error)+'</div>';
+  if(state.loading && !state.candidates.length){
+    h += '<div class="empty"><div><b>加载中</b><span class="mono">fetching candidates...</span></div></div>';
+  } else if(state.candidates.length){
+    h += '<div class="cards">'+state.candidates.map(c=>{
+      const tags = (c.tags||[]).slice(0,6).map(t=>'<span class="tag">'+esc(t)+'</span>').join("");
+      return '<article class="card"><div class="card-top"><span class="type">'+esc(c.type||"candidate")+'</span><span class="source">'+esc(c.fact_key||"—")+'</span><span class="date">'+shortDate(c.created_at)+'</span></div>'+
+        '<div class="content" style="-webkit-line-clamp:6">'+esc(c.content||"")+'</div>'+
+        '<div class="tags">'+tags+'<span class="scores">conf '+scorePct(c.confidence)+' · imp '+scorePct(c.importance)+'</span></div>'+
+        '<div style="display:flex;gap:8px;margin-top:4px">'+
+          '<button class="btn primary" data-approve="'+esc(c.id)+'">批准</button>'+
+          '<button class="btn danger" data-discard="'+esc(c.id)+'">丢弃</button>'+
+        '</div></article>';
+    }).join("")+'</div>';
+  } else {
+    h += '<div class="empty"><div><b>暂无候选</b><span>小秘书提取的新记忆会先进入候选区等待审核。</span></div></div>';
+  }
+  h += '</main>';
+  return h;
 }
 function memoryCard(m){
   const tags = (m.tags || []).slice(0,8).map(t=>'<span class="tag">'+esc(t)+'</span>').join("");
@@ -510,7 +638,7 @@ function restoreScroll(pos){
 }
 function render(preserveScroll=true){
   const scroll = preserveScroll ? captureScroll() : null;
-  app.innerHTML = renderTop() + (state.tab === "diaries" ? renderDiaries() : state.tab === "emotion" ? renderEmotionMap() : '<div class="main">'+renderFilters()+renderList()+renderDetail()+'</div>') + (state.toast ? '<div class="toast">'+esc(state.toast)+'</div>' : "");
+  app.innerHTML = renderTop() + (state.tab === "diaries" ? renderDiaries() : state.tab === "emotion" ? renderEmotionMap() : renderMemories()) + (state.toast ? '<div class="toast">'+esc(state.toast)+'</div>' : "");
   bind();
   restoreScroll(scroll);
 }
@@ -519,7 +647,8 @@ function bind(){
   $("#api-key")?.addEventListener("input", e=>{ state.apiKey=e.target.value; savePrefs(); });
   $("#test-conn")?.addEventListener("click", testConnection);
   $("#theme-toggle")?.addEventListener("click", ()=>{ state.theme = state.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = state.theme; savePrefs(); render(); });
-  document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>{ state.tab=b.dataset.tab; if(state.tab==="diaries" && !state.diaries.length) loadDiaries(); if(state.tab==="emotion" && !state.emotionMap.length && !state.emotionMapLoading) loadEmotionMap(); render(); }));
+  document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>{ state.tab=b.dataset.tab; if(state.tab==="diaries" && !state.diaries.length) loadDiaries(); if(state.tab==="emotion" && !state.emotionMap.length && !state.emotionMapLoading) loadEmotionMap(); if(state.tab==="memories" && !state.precious.length) loadPrecious(); render(); }));
+  document.querySelectorAll("[data-subtab]").forEach(b=>b.addEventListener("click",()=>{ state.memoriesSubTab=b.dataset.subtab; state.active=null; state.error=""; if(state.memoriesSubTab==="precious" && !state.precious.length) loadPrecious(); if(state.memoriesSubTab==="glossary" && !state.glossary.length) loadGlossary(); if(state.memoriesSubTab==="candidates" && !state.candidates.length) loadCandidates(); render(); }));
   $("#query")?.addEventListener("input", e=>setFilter("query", e.target.value));
   $("#query")?.addEventListener("keydown", e=>{ if(e.key==="Enter") searchMemories(); });
   $("#search-btn")?.addEventListener("click", searchMemories);
@@ -598,10 +727,14 @@ function bind(){
   $("#run-weekly-exec")?.addEventListener("click", ()=>runWeeklyRollup(false));
   $("#run-monthly-dry")?.addEventListener("click", ()=>runMonthlyRollup(true));
   $("#run-monthly-exec")?.addEventListener("click", ()=>runMonthlyRollup(false));
-
+  $("#refresh-precious")?.addEventListener("click", ()=>loadPrecious());
+  $("#refresh-glossary")?.addEventListener("click", ()=>loadGlossary());
+  $("#refresh-candidates")?.addEventListener("click", ()=>loadCandidates());
+  document.querySelectorAll("[data-approve]").forEach(b=>b.addEventListener("click",()=>approveCandidate(b.dataset.approve)));
+  document.querySelectorAll("[data-discard]").forEach(b=>b.addEventListener("click",()=>discardCandidate(b.dataset.discard)));
 }
 render();
-if(state.apiKey) { loadList(); loadDiaries(); }
+if(state.apiKey) { loadList(); loadDiaries(); loadPrecious(); }
 window.addEventListener("resize", ()=>{ if(state.tab === "emotion" && state.emotionMap.length) drawEmotionCanvas(state.emotionMap); });
 </script>
 </body>
