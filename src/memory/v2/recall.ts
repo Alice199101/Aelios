@@ -385,17 +385,21 @@ export async function runRecall(env: Env, input: RecallInput): Promise<RecallRes
   //    调用方传 core_fingerprint (boot 包的 precious 文本指纹)；
   //    不传则服务端自己建 (读 precious), 保证闸二默认生效。
   //    recall 命中与之高度重叠的降到 0 分剔除, 不重复喂。
+  //    buildCoreFingerprint always returns an object — always filter when we have hits.
+  //    Skip the DB fingerprint fallback when scored is empty (nothing to dedupe).
   const dedupedIds: string[] = [];
-  const core = input.core_fingerprint ?? (await buildCoreFingerprintFromDb(env, input.namespace));
-  const afterDedup = core
-    ? scored.filter((h) => {
-        if (isDuplicateWithCore(h.content, core)) {
-          dedupedIds.push(h.id);
-          return false;
-        }
-        return true;
-      })
-    : scored;
+  let afterDedup = scored;
+  if (scored.length > 0) {
+    const core =
+      input.core_fingerprint ?? (await buildCoreFingerprintFromDb(env, input.namespace));
+    afterDedup = scored.filter((h) => {
+      if (isDuplicateWithCore(h.content, core)) {
+        dedupedIds.push(h.id);
+        return false;
+      }
+      return true;
+    });
+  }
 
   // 4.5 LMC-5 Y 轴: 2-hop relation expansion (default off = seed set unchanged).
   // Runs after gate-2 dedup so expanded neighbors are also core-deduped next? We expand

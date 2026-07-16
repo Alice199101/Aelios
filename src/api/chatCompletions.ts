@@ -58,6 +58,47 @@ export function hasToolRound(body: OpenAIChatRequest): boolean {
   return hasTools(body) || hasToolContent(body);
 }
 
+function recallHitToMemoryRecord(
+  h: {
+    id: string;
+    type: string;
+    content: string;
+    score: number;
+    source_layer: string;
+  },
+  namespace: string
+) {
+  return {
+    id: h.id,
+    namespace,
+    type: h.type,
+    content: h.content,
+    summary: null,
+    importance: h.score,
+    confidence: 1,
+    status: "active",
+    pinned: false,
+    tags: [] as string[],
+    source: h.source_layer,
+    source_message_ids: [] as string[],
+    vector_id: null,
+    last_recalled_at: null,
+    recall_count: 0,
+    created_at: "",
+    updated_at: "",
+    expires_at: null,
+    fact_key: null,
+    supersedes_id: null,
+    superseded_by_id: null,
+    review_reason: null,
+    valid_as_of: null,
+    last_seen_at: null,
+    seen_count: 0,
+    last_injected_at: null,
+    score: h.score,
+  };
+}
+
 export async function handleChatCompletions(
   request: Request,
   env: Env,
@@ -154,35 +195,7 @@ export async function handleChatCompletions(
   }
 
   const recallHitsAsMemories = recallResult
-    ? recallResult.hits.map((h) => ({
-        id: h.id,
-        namespace,
-        type: h.type,
-        content: h.content,
-        summary: null,
-        importance: h.score,
-        confidence: 1,
-        status: "active",
-        pinned: false,
-        tags: [],
-        source: h.source_layer,
-        source_message_ids: [],
-        vector_id: null,
-        last_recalled_at: null,
-        recall_count: 0,
-        created_at: "",
-        updated_at: "",
-        expires_at: null,
-        fact_key: null,
-        supersedes_id: null,
-        superseded_by_id: null,
-        review_reason: null,
-        valid_as_of: null,
-        last_seen_at: null,
-        seen_count: 0,
-        last_injected_at: null,
-        score: h.score,
-      }))
+    ? recallResult.hits.map((h) => recallHitToMemoryRecord(h, namespace))
     : [];
 
   let upstream: Response;
