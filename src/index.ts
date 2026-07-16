@@ -31,6 +31,7 @@ import { runMonthlyRollup } from "./memory/monthlyRollup";
 import { runWeeklyRollup } from "./memory/weeklyRollup";
 import { runGithubDailyPull } from "./memory/githubDaily";
 import { runMemoryRetention } from "./memory/retention";
+import { runCandidateJudge } from "./memory/candidateJudge";
 import { handleQueueMessage } from "./queue/consumer";
 import type { Env, QueueMessage } from "./types";
 import { openAiError } from "./utils/json";
@@ -240,6 +241,17 @@ export default {
 
         const dreamResults = await runDailyMemoryDigestBatches(env, namespace);
         results.push({ type: "dream_batches", results: dreamResults });
+
+        let candidateJudge: Awaited<ReturnType<typeof runCandidateJudge>> | undefined;
+        try {
+          candidateJudge = await runCandidateJudge(env, namespace);
+        } catch (error) {
+          console.error("scheduled candidate judge failed", {
+            namespace,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+        results.push({ type: "candidate_judge", result: candidateJudge ?? { ran: false } });
 
         let diaryWriter: Awaited<ReturnType<typeof runDiaryWriterNightly>> | undefined;
         try {
