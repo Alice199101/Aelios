@@ -125,6 +125,7 @@ export function buildDreamExtractPrompt(messages: MessageRecord[], existingFactK
     "- type 只能从这 15 个里选：note、preference、boundary、relationship、project、identity、moment、whisper、excerpt、diary、debug、fact、event、habit、decision。绝不输出 world_fact、commitment 等其他值；项目进展归 fact，承诺/决定归 decision，习惯归 habit。",
     "- 稳定事实必须尽量给 fact_key，格式为小写 ASCII，例如 preference:answer-style、boundary:no-system-records、decision:sell-car-2026-09。",
     "- 临时计划和意图不是稳定事实：要么提炼成背后的持久事实，要么直接跳过。",
+    "- 每条记忆的 tags 里必须额外附一个情感标签，固定格式 emotion:v=效价,a=唤醒度。效价 v 取 -1 到 1（负面到正面），唤醒度 a 取 0 到 1（平静到强烈）。例：温馨承诺 emotion:v=0.8,a=0.55；中性事实 emotion:v=0,a=0.1；压力/冲突 emotion:v=-0.6,a=0.7。这个标签用于记忆衰减和情感地图，不要省略。",
     "",
     "亲密 session（强制，不准跳过）：",
     "- 如果这批对话里出现了成段的亲密/性内容，除按普通规则抽取外，必须额外出 1 条 type=event 的「玩法记录」：清单式、不煽情，只记事实——玩法/动作/道具/角色框架/新开的边界/偏好或身体状态变化。",
@@ -146,7 +147,7 @@ export function buildDreamExtractPrompt(messages: MessageRecord[], existingFactK
           fact_key: "decision:sell-car-2026-09",
           importance: 0.86,
           confidence: 0.92,
-          tags: ["decision", "personal"],
+          tags: ["decision", "personal", "emotion:v=0.3,a=0.4"],
           source_message_ids: ["msg_x"]
         }
       ]

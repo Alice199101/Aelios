@@ -164,6 +164,51 @@ async function handleListMemories(request: Request, env: Env, profile: KeyProfil
   });
 }
 
+const EMOTION_TAG_PATTERN = /^emotion:v=([-\d.]+),a=([-\d.]+)$/;
+
+// 情感地图数据源：扫描 active 记忆的 tags，抽出 emotion:v=...,a=... 标签。
+// 没有情感标签的记忆直接跳过——前端画布只画带信号的点。
+async function handleEmotionMap(request: Request, env: Env, profile: KeyProfile): Promise<Response> {
+  const scopeError = requireScope(profile, "memory:read");
+  if (scopeError) return scopeError;
+
+  const url = new URL(request.url);
+  const namespace = resolveNamespace(profile, url.searchParams.get("namespace"));
+  const limit = readPositiveInt(url.searchParams.get("limit"), 500, 1000);
+  const page = await listMemoriesPage(env.DB, { namespace, status: "active", limit, offset: 0 });
+
+  const data: Array<Record<string, unknown>> = [];
+  for (const record of page.records) {
+    let tags: string[] = [];
+    try {
+      const parsed = JSON.parse(record.tags || "[]");
+      if (Array.isArray(parsed)) tags = parsed.map((t) => String(t));
+    } catch {
+      continue;
+    }
+    for (const tag of tags) {
+      const match = EMOTION_TAG_PATTERN.exec(tag);
+      if (!match) continue;
+      const valence = Number.parseFloat(match[1]);
+      const arousal = Number.parseFloat(match[2]);
+      if (!Number.isFinite(valence) || !Number.isFinite(arousal)) break;
+      data.push({
+        id: record.id,
+        type: record.type,
+        content: record.content,
+        importance: record.importance,
+        valence: Math.max(-1, Math.min(1, valence)),
+        arousal: Math.max(-1, Math.min(1, arousal)),
+        tags,
+        created_at: record.created_at
+      });
+      break;
+    }
+  }
+
+  return json({ data, count: data.length });
+}
+
 async function handleExportMemories(request: Request, env: Env, profile: KeyProfile): Promise<Response> {
   let scopeError = requireScope(profile, "memory:read");
   if (scopeError) return scopeError;
@@ -1062,6 +1107,10 @@ export async function handleMemories(request: Request, env: Env, ctx: ExecutionC
 
   if (tail.length === 1 && tail[0] === "export" && request.method === "GET") {
     return handleExportMemories(request, env, auth.profile);
+  }
+
+  if (tail.length === 1 && tail[0] === "emotion-map" && request.method === "GET") {
+    return handleEmotionMap(request, env, auth.profile);
   }
 
   if (tail.length === 1) {
