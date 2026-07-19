@@ -91,6 +91,11 @@ GITHUB_DAILY_PATH = "archive/daily"
 binding = "VECTORIZE"
 index_name = "memo-kb-m3"
 
+[[d1_databases]]
+binding = "DB"
+database_name = "companion_memory_proxy"
+database_id = "316f41d8-69b1-469f-8ded-3e2b74bb2443"
+
 [[queues.producers]]
 binding = "MEMORY_QUEUE"
 queue = "companion-memory"
