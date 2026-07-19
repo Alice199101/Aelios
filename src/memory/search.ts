@@ -76,6 +76,7 @@ export function toMemoryApiRecord(
     vector_id: record.vector_id,
     last_recalled_at: record.last_recalled_at,
     recall_count: record.recall_count,
+    decay_score: record.decay_score ?? null,
     created_at: record.created_at,
     updated_at: record.updated_at,
     expires_at: record.expires_at,
