@@ -52,9 +52,14 @@ MEMORY_TOP_K = "50"
 # 典型命中分 0.85-0.9，0.5 默认压不过地板（0.425>0.15），0.15 才能真正抑制窗口内重复注入 (0.9*0.15=0.135<0.15)。
 MEMORY_INJECT_DECAY_FACTOR = "0.15"
 MEMORY_RERANKER_MODEL = "workers-ai/@cf/baai/bge-reranker-base"
-VECTORIZE_INDEX_NAME = "memo-kb"
-EMBEDDING_MODEL = "workers-ai/@cf/baai/bge-base-en-v1.5"
-EMBEDDING_DIMENSIONS = "768"
+# bge-m3: multilingual (zh/en) embedding, 1024-dim. Replaces bge-base-en-v1.5
+# (768-dim, EN-only) which systematically under-scored Chinese content —
+# greeting-style queries scored 0.1-0.15 and fell below the recall floor.
+# Vectorize index dimensions are immutable, so this points at a NEW index
+# (memo-kb-m3); the old 768-dim memo-kb is left untouched for rollback.
+VECTORIZE_INDEX_NAME = "memo-kb-m3"
+EMBEDDING_MODEL = "workers-ai/@cf/baai/bge-m3"
+EMBEDDING_DIMENSIONS = "1024"
 # messages 表保留天数；后台 retention 按 namespace 24h 节流清理。
 MESSAGES_RETENTION_DAYS = "7"
 DREAM_TIME_ZONE = "Asia/Singapore"
@@ -84,7 +89,7 @@ GITHUB_DAILY_PATH = "archive/daily"
 
 [[vectorize]]
 binding = "VECTORIZE"
-index_name = "memo-kb"
+index_name = "memo-kb-m3"
 
 [[queues.producers]]
 binding = "MEMORY_QUEUE"

@@ -1,6 +1,7 @@
 import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
-import { createEmbedding } from "../memory/embedding";
+import { createEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
+import { listMemoriesPage } from "../db/memories";
 import {
   createVectorMemory,
   deleteVectorMemory,
@@ -286,6 +287,68 @@ export async function handleVectorReindex(request: Request, env: Env): Promise<R
   const cursor = readString(body.cursor);
   const dryRun = readBoolean(body.dry_run, true);
   const model = readEmbeddingModel(env);
+  // source: "vectorize" (default) enumerates existing vectors; "d1" reads memories
+  // from D1 and re-embeds into the current index. Use "d1" when migrating to a
+  // fresh/empty Vectorize index (e.g. embedding model/dimension change).
+  const source = readString(body.source) || "vectorize";
+
+  if (source === "d1") {
+    const offsetRaw = Number((body as { offset?: unknown }).offset);
+    const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+
+    try {
+      const page = await listMemoriesPage(env.DB, {
+        namespace,
+        status: "active",
+        limit,
+        offset
+      });
+      const rewritten: Array<{ id: string; vector_id: string | null; ok: boolean; error?: string }> = [];
+
+      for (const record of page.records) {
+        if (dryRun) {
+          rewritten.push({ id: record.id, vector_id: record.vector_id, ok: true });
+          continue;
+        }
+
+        try {
+          const ok = await upsertMemoryEmbedding(env, record);
+          rewritten.push({ id: record.id, vector_id: record.vector_id, ok });
+        } catch (error) {
+          rewritten.push({
+            id: record.id,
+            vector_id: record.vector_id,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      const failed = rewritten.filter((item) => !item.ok);
+      return json({
+        ok: failed.length === 0,
+        data: {
+          namespace,
+          source: "d1",
+          embedding_model: model,
+          dry_run: dryRun,
+          requested_limit: limit,
+          matched_memories: page.records.length,
+          rewritten_count: rewritten.length - failed.length,
+          failed_count: failed.length,
+          has_more: page.hasMore,
+          next_offset: page.nextOffset,
+          rewritten,
+          failed
+        }
+      }, { status: failed.length === 0 ? 200 : 500 });
+    } catch (error) {
+      return json({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }, { status: 500 });
+    }
+  }
 
   try {
     const page = await listVectorMemories(env, {
