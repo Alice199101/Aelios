@@ -98,7 +98,11 @@ function extractHistoryMessages(messages: OpenAIChatMessage[]): OpenAIChatMessag
   const result: OpenAIChatMessage[] = [];
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    if (msg.role !== "user" && msg.role !== "assistant") continue;
+    // Keep user/assistant AND tool messages. Tool results and the
+    // assistant tool_calls that precede them form the tool loop —
+    // dropping them makes the model believe its calls never happened
+    // and re-issue them forever.
+    if (msg.role !== "user" && msg.role !== "assistant" && msg.role !== "tool") continue;
     if (i === lastUserIdx) continue;
     result.push(msg);
   }

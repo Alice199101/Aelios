@@ -116,7 +116,11 @@ export function assembledToAnthropicMessages(
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    const role = msg.role;
+    // Anthropic wire only has user/assistant roles; tool results are
+    // represented as user-side content per Anthropic convention. In the
+    // normal proxy path tool messages are converted by anthropicAdapter
+    // before reaching here, so this is a type-safe fallback.
+    const role = msg.role === "tool" ? "user" : msg.role;
     const text = contentToPlainText(msg.content);
 
     const prev = wire[wire.length - 1];

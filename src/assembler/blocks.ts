@@ -38,10 +38,21 @@ function isNonEmptyContent(content: OpenAIChatMessage["content"]): boolean {
 
 function messageToOutput(
   msg: OpenAIChatMessage
-): { role: "user" | "assistant"; content: string | unknown[] | null } | null {
+): AssembledPrompt["messages"][number] | null {
+  if (msg.role === "tool") {
+    // Tool result: must be preserved with its tool_call_id so the
+    // model sees the tool loop as closed.
+    if (!msg.tool_call_id) return null;
+    return { role: "tool", content: msg.content ?? "", tool_call_id: msg.tool_call_id };
+  }
   if (msg.role !== "user" && msg.role !== "assistant") return null;
-  if (!isNonEmptyContent(msg.content)) return null;
-  return { role: msg.role, content: msg.content };
+  const hasToolCalls = msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+  // Assistant messages that only carry tool_calls have empty content —
+  // they must NOT be dropped, or the model loses the record of its call.
+  if (!isNonEmptyContent(msg.content) && !hasToolCalls) return null;
+  const out: AssembledPrompt["messages"][number] = { role: msg.role, content: msg.content };
+  if (hasToolCalls) out.tool_calls = msg.tool_calls;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -415,7 +426,7 @@ const TURN_CONTEXT_ID_SET = new Set<string>(TURN_CONTEXT_BLOCK_IDS);
  */
 export function assemble(ctx: AssemblerContext): AssembledPrompt {
   const systemBlocks: SystemBlock[] = [];
-  const messages: Array<{ role: "user" | "assistant"; content: string | unknown[] | null }> = [];
+  const messages: AssembledPrompt["messages"] = [];
   const enabledBlockIds: string[] = [];
   const turnContextParts: string[] = [];
   const anchorIndices: number[] = [];
@@ -525,7 +536,7 @@ export function assemble(ctx: AssemblerContext): AssembledPrompt {
  * per-turn dynamic content.
  */
 function computeCacheBreakpoints(
-  historyMessages: Array<{ role: "user" | "assistant"; content: string | unknown[] | null }>,
+  historyMessages: AssembledPrompt["messages"],
   anchorIndices: number[]
 ): CacheBreakpoint[] {
   const LOOKBACK = 16;

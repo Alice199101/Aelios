@@ -109,7 +109,14 @@ export function countMessageBlocks(
 
 export interface AssembledPrompt {
   system_blocks: SystemBlock[];
-  messages: Array<{ role: "user" | "assistant"; content: string | unknown[] | null }>;
+  messages: Array<{
+    role: "user" | "assistant" | "tool";
+    content: string | unknown[] | null;
+    /** Present on assistant messages that invoked tools. */
+    tool_calls?: unknown;
+    /** Present on tool result messages. */
+    tool_call_id?: string;
+  }>;
   meta: {
     anchor_index: number;
     block_ids: string[];
