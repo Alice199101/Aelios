@@ -78,6 +78,9 @@ const state = {
   precious:[],
   glossary:[],
   candidates:[],
+  stream:[],
+  streamLoading:false,
+  streamDate:new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10),
 };
 document.documentElement.dataset.theme = state.theme;
 
@@ -278,7 +281,7 @@ function statusDot(){
 function renderTop(){
   return '<div class="top">'+
     '<div class="brand"><div class="mark">A</div><div><b>Aelios</b><span>MEMORY · ADMIN</span></div></div>'+
-    '<div class="tabs"><button class="tab '+(state.tab==="memories"?"active":"")+'" data-tab="memories">记忆库</button><button class="tab '+(state.tab==="diaries"?"active":"")+'" data-tab="diaries">日记</button><button class="tab '+(state.tab==="emotion"?"active":"")+'" data-tab="emotion">情感地图</button></div>'+
+    '<div class="tabs"><button class="tab '+(state.tab==="memories"?"active":"")+'" data-tab="memories">记忆库</button><button class="tab '+(state.tab==="stream"?"active":"")+'" data-tab="stream">对话流</button><button class="tab '+(state.tab==="diaries"?"active":"")+'" data-tab="diaries">日记</button><button class="tab '+(state.tab==="emotion"?"active":"")+'" data-tab="emotion">情感地图</button></div>'+
     '<div class="cred"><input class="input worker mono" id="worker-url" placeholder="Worker URL" value="'+esc(state.workerUrl)+'"><input class="input key mono" id="api-key" type="password" placeholder="API Key" value="'+esc(state.apiKey)+'"></div>'+
     statusDot()+
     '<button class="btn primary" id="test-conn">测试连接</button>'+
@@ -528,6 +531,55 @@ function renderDiaries(){
   h += '</main>';
   return h;
 }
+// ── 对话流：读 memory_boot 的 today_messages，按日期查看原始消息，支持一键 pin 成 precious ──
+async function loadStream(){
+  state.streamLoading = true; state.error = ""; render();
+  try {
+    const d = state.streamDate;
+    const start = d + "T00:00:00.000Z";
+    const end = d + "T23:59:59.999Z";
+    const data = await request("/v1/memory_boot?namespace=default&start=" + encodeURIComponent(start) + "&end=" + encodeURIComponent(end));
+    state.stream = (data.data && data.data.today_messages) || [];
+    state.status = "connected";
+  } catch(e) { state.error = e.message; }
+  state.streamLoading = false; render();
+}
+async function pinStreamMessage(idx){
+  const m = state.stream[idx];
+  if(!m || !m.content) return;
+  try {
+    await request("/v1/precious?namespace=default", { method:"POST", body:JSON.stringify({ content: m.content, note: "pinned from stream " + (m.created_at || "") }) });
+    toast("已标记为珍贵");
+  } catch(e) { toast("失败: " + e.message); }
+}
+function streamBubble(m, idx){
+  const isUser = m.role === "user";
+  const time = (m.created_at || "").slice(11,16);
+  return '<div style="display:flex;flex-direction:column;align-items:'+(isUser?"flex-end":"flex-start")+';margin:6px 12px">'+
+    '<div style="max-width:78%;padding:8px 12px;border-radius:12px;border:1px solid var(--line);background:'+(isUser?"var(--accent-soft, rgba(120,140,255,.12))":"var(--panel)")+';font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word">'+esc(m.content || "")+'</div>'+
+    '<div style="font-size:10px;color:var(--muted);margin-top:2px;display:flex;gap:8px;align-items:center">'+
+      '<span>'+esc(isUser?"用户":"助手")+' · '+esc(time)+'</span>'+
+      '<button class="btn" style="font-size:10px;padding:1px 8px" data-pin-stream="'+idx+'">★ 珍贵</button>'+
+    '</div>'+
+  '</div>';
+}
+function renderStream(){
+  let h = '<main class="debug">'+
+    '<div class="debug-head"><h1>对话流</h1><span class="meta">GET /v1/memory_boot · today_messages</span><span class="grow"></span>'+
+    '<input class="input mono" type="date" id="stream-date" value="'+esc(state.streamDate)+'" style="width:150px">'+
+    '<button class="btn" id="refresh-stream">加载</button></div>';
+  if(state.error) h += '<div class="hint" style="margin:12px;border-color:rgba(226,118,99,.5);color:var(--bad)">'+esc(state.error)+'</div>';
+  if(state.streamLoading){
+    h += '<div class="empty"><div><b>加载中</b><span class="mono">fetching raw messages...</span></div></div>';
+  } else if(state.stream.length){
+    h += '<div style="padding:4px 12px;font-size:11px;color:var(--muted)">'+state.stream.length+' 条原始消息（UTC 日界，最多 160 条）</div>'+
+      '<div style="overflow-y:auto">'+state.stream.map((m,i)=>streamBubble(m,i)).join("")+'</div>';
+  } else {
+    h += '<div class="empty"><div><b>暂无消息</b><span>该日期没有原始对话，换个日期试试。</span></div></div>';
+  }
+  h += '</main>';
+  return h;
+}
 async function loadEmotionMap(){
   state.emotionMapLoading = true; state.emotionMap = []; state.error = ""; render();
   try {
@@ -638,7 +690,7 @@ function restoreScroll(pos){
 }
 function render(preserveScroll=true){
   const scroll = preserveScroll ? captureScroll() : null;
-  app.innerHTML = renderTop() + (state.tab === "diaries" ? renderDiaries() : state.tab === "emotion" ? renderEmotionMap() : renderMemories()) + (state.toast ? '<div class="toast">'+esc(state.toast)+'</div>' : "");
+  app.innerHTML = renderTop() + (state.tab === "diaries" ? renderDiaries() : state.tab === "emotion" ? renderEmotionMap() : state.tab === "stream" ? renderStream() : renderMemories()) + (state.toast ? '<div class="toast">'+esc(state.toast)+'</div>' : "");
   bind();
   restoreScroll(scroll);
 }
@@ -647,7 +699,7 @@ function bind(){
   $("#api-key")?.addEventListener("input", e=>{ state.apiKey=e.target.value; savePrefs(); });
   $("#test-conn")?.addEventListener("click", testConnection);
   $("#theme-toggle")?.addEventListener("click", ()=>{ state.theme = state.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = state.theme; savePrefs(); render(); });
-  document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>{ state.tab=b.dataset.tab; if(state.tab==="diaries" && !state.diaries.length) loadDiaries(); if(state.tab==="emotion" && !state.emotionMap.length && !state.emotionMapLoading) loadEmotionMap(); if(state.tab==="memories" && !state.precious.length) loadPrecious(); render(); }));
+  document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>{ state.tab=b.dataset.tab; if(state.tab==="diaries" && !state.diaries.length) loadDiaries(); if(state.tab==="emotion" && !state.emotionMap.length && !state.emotionMapLoading) loadEmotionMap(); if(state.tab==="stream" && !state.stream.length && !state.streamLoading) loadStream(); if(state.tab==="memories" && !state.precious.length) loadPrecious(); render(); }));
   document.querySelectorAll("[data-subtab]").forEach(b=>b.addEventListener("click",()=>{ state.memoriesSubTab=b.dataset.subtab; state.active=null; state.error=""; if(state.memoriesSubTab==="precious" && !state.precious.length) loadPrecious(); if(state.memoriesSubTab==="glossary" && !state.glossary.length) loadGlossary(); if(state.memoriesSubTab==="candidates" && !state.candidates.length) loadCandidates(); render(); }));
   $("#query")?.addEventListener("input", e=>setFilter("query", e.target.value));
   $("#query")?.addEventListener("keydown", e=>{ if(e.key==="Enter") searchMemories(); });
@@ -673,6 +725,9 @@ function bind(){
   $("#show-filter")?.addEventListener("click", ()=>{ state.showFilters = true; render(); });
   $("#close-filter")?.addEventListener("click", ()=>{ state.showFilters = false; render(); });
   $("#refresh-diaries")?.addEventListener("click", ()=>loadDiaries());
+  $("#refresh-stream")?.addEventListener("click", ()=>loadStream());
+  $("#stream-date")?.addEventListener("change", e=>{ state.streamDate = e.target.value; loadStream(); });
+  document.querySelectorAll("[data-pin-stream]").forEach(b=>b.addEventListener("click",()=>pinStreamMessage(Number(b.dataset.pinStream))));
   // emotion map canvas events
   const ec = document.getElementById("emotion-canvas");
   if(ec){
