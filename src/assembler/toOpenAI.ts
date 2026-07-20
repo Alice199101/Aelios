@@ -90,10 +90,15 @@ export function assembledToOpenAIMessages(
       continue;
     }
 
-    result.push({
+    const out: OpenAIChatMessage = {
       role: msg.role,
       content: msg.content as string | Array<unknown> | null,
-    });
+    };
+    // Preserve the tool loop: assistant tool_calls and tool result ids
+    // must survive conversion, or upstream rejects / model loses context.
+    if (msg.tool_calls) out.tool_calls = msg.tool_calls as OpenAIChatMessage["tool_calls"];
+    if (msg.tool_call_id) out.tool_call_id = msg.tool_call_id;
+    result.push(out);
   }
 
   return result;
