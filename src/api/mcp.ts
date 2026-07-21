@@ -12,7 +12,8 @@ import {
   getPreciousById,
   markPreciousInjected,
   supersedeMemory,
-  upsertGlossary,
+upsertGlossary,
+  upsertDailyLog,
   upsertMemoryByFactKey
 } from "../db/v2";
 import { filterAndCompressMemories } from "../memory/filter";
@@ -327,6 +328,24 @@ function getTools(): Array<Record<string, unknown>> {
           week: { type: "string", description: "ISO week label, e.g. 2026-W29" },
           namespace: { type: "string" }
         }
+      }
+    },
+    {
+      name: "diary_write",
+      description:
+        "Write a first-person diary entry to daily_log. This is YOUR diary: write it voluntarily when a day " +
+        "feels worth recording, in your own voice. Default mode=append adds to the same day's existing entry; " +
+        "mode=replace overwrites it. Nightly automation no longer writes diaries; blank days are honest days.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Diary title for the day" },
+          content: { type: "string", description: "Diary body, first-person voice" },
+          date: { type: "string", description: "YYYY-MM-DD; omit for today" },
+          mode: { type: "string", enum: ["append", "replace"], description: "append (default) or replace" },
+          namespace: { type: "string" }
+        },
+        required: ["title", "content"]
       }
     }
   ];
@@ -697,6 +716,47 @@ async function callTool(
       getDailyLog(env.DB, { namespace, date: yesterday })
     ]);
     return textToolResult({ data: rows.filter((row) => row !== null) });
+  }
+  if (params.name === "diary_write") {
+    if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
+    const namespace = resolveNamespace(profile, args.namespace);
+    const title = readString(args.title);
+    const content = readString(args.content);
+    if (!title) return toolError("title is required");
+    if (!content) return toolError("content is required");
+    const date = readString(args.date);
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return toolError("date must be YYYY-MM-DD");
+    }
+    const mode = readString(args.mode) || "append";
+    if (mode !== "append" && mode !== "replace") {
+      return toolError("mode must be append or replace");
+    }
+    const timeZone = readDreamTimeZoneFromEnv(env);
+    const targetDate =
+      date ||
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).format(new Date());
+    let finalTitle = title;
+    let finalSummary = content;
+    if (mode === "append") {
+      const existing = await getDailyLog(env.DB, { namespace, date: targetDate });
+      if (existing && existing.summary) {
+        finalSummary = `${existing.summary}\n\n---\n\n${content}`;
+        finalTitle = existing.title && existing.title !== title ? `${existing.title} / ${title}` : title;
+      }
+    }
+    const row = await upsertDailyLog(env.DB, {
+      namespace,
+      date: targetDate,
+      title: finalTitle,
+      summary: finalSummary
+    });
+    return textToolResult({ data: row, mode });
   }
 
   return toolError(`Unknown tool: ${String(params.name || "")}`);
