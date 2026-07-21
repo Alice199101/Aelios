@@ -484,9 +484,10 @@ async function loadDiaries(offset=0, append=false){
   state.loading = true; state.error = ""; if(!append) state.diaries = []; render(append);
   try {
     const data = await request("/admin/diary?namespace=default&limit=30");
-    const incoming = data.dailies || [];
+    const payload = data.data || data;
+    const incoming = payload.dailies || [];
     state.diaries = append ? [...state.diaries, ...incoming] : incoming;
-    state.weeklies = data.weeklies || [];
+    state.weeklies = payload.weeklies || [];
     state.diaryPaging = { offset: offset + incoming.length, hasMore: false };
     state.status = "connected";
   } catch(e) { state.error = e.message; }
