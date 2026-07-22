@@ -6,6 +6,7 @@ import {
   archiveMemory,
   createPrecious,
   deleteMemoryV2,
+  deletePrecious,
   fetchMemoryLifecycleRows,
   getDailyLog,
   getWeeklyLog,
@@ -245,6 +246,18 @@ function getTools(): Array<Record<string, unknown>> {
           namespace: { type: "string" }
         },
         required: ["content"]
+      }
+    },
+    {
+      name: "memory_unpin",
+      description: "Delete a precious memory by id.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          namespace: { type: "string" }
+        },
+        required: ["id"]
       }
     },
     {
@@ -587,7 +600,15 @@ async function callTool(
     });
     return textToolResult({ data: precious });
   }
-
+  if (params.name === "memory_unpin") {
+    if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
+    if (!isV2Enabled(env)) return toolError("memory_unpin requires MEMORY_LIFECYCLE_ENABLED=true");
+    const id = readString(args.id);
+    if (!id) return toolError("id is required");
+    const namespace = resolveNamespace(profile, args.namespace);
+    const deleted = await deletePrecious(env.DB, { namespace, id });
+    return textToolResult({ data: { deleted } });
+  }
   if (params.name === "glossary_set") {
     if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
     if (!isV2Enabled(env)) return toolError("glossary_set requires MEMORY_LIFECYCLE_ENABLED=true");
