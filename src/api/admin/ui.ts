@@ -496,13 +496,13 @@ async function loadDiaries(offset=0, append=false){
 function diaryCard(d){
   return '<article class="card">'+
     '<div class="card-top"><span class="type">diary</span><span class="source">'+esc(d.date || "—")+'</span><span class="date">'+shortDate(d.updated_at)+'</span></div>'+
-    '<div class="content"><b>'+esc(d.title || "—")+'</b>\n'+esc((d.summary || "").slice(0,200))+'</div>'+
+    '<div class="content"><b>'+esc(d.title || "—")+'</b>\n'+esc(d.summary || "")+'</div>'+
   '</article>';
 }
 function weekCard(w){
   return '<article class="card">'+
     '<div class="card-top"><span class="type">week</span><span class="source">'+esc(w.week)+'</span><span class="muted">'+esc(w.start_date+"~"+w.end_date)+'</span></div>'+
-    '<div class="content"><b>'+esc(w.title || "—")+'</b>\n'+esc((w.summary || "").slice(0,200))+'</div>'+
+    '<div class="content"><b>'+esc(w.title || "—")+'</b>\n'+esc(w.summary || "")+'</div>'+
   '</article>';
 }
 function renderDiaries(){
