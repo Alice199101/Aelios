@@ -15,7 +15,7 @@ import {
 } from "./dreamDates";
 import { readDreamTimeZoneFromEnv } from "./dreamEnv";
 
-const DEFAULT_TIME_ZONE = "Asia/Singapore";
+const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 const DEFAULT_DREAM_MODEL = "workers-ai/@cf/openai/gpt-oss-120b";
 const MAX_WEEKS_PER_RUN = 2;
 const MODEL_RETRY_BACKOFF_MS = [2000, 8000];

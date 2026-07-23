@@ -554,7 +554,7 @@ function formatDateLabel(date: Date, timeZone: string): string {
 }
 
 function readDiaryTimeZone(env: Env): string {
-  return env.DREAM_TIME_ZONE?.trim() || env.DAILY_DIGEST_TIME_ZONE?.trim() || "Asia/Singapore";
+  return env.DREAM_TIME_ZONE?.trim() || env.DAILY_DIGEST_TIME_ZONE?.trim() || "Asia/Shanghai";
 }
 
 export async function handleDiaryApi(request: Request, env: Env): Promise<Response> {

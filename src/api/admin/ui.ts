@@ -88,7 +88,7 @@ const state = {
 document.documentElement.dataset.theme = state.theme;
 
 function esc(value){ return String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
-function fmtDate(value){ if(!value) return "—"; const d = new Date(value); if(Number.isNaN(d.getTime())) return value; return d.toISOString().replace("T"," ").replace(/\.\d+Z$/,"Z"); }
+function fmtDate(value){ if(!value) return "—"; const d = new Date(value); if(Number.isNaN(d.getTime())) return value; return new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).format(d).replaceAll("/","-"); }
 function shortDate(value){ if(!value) return "—"; const t = Date.now() - new Date(value).getTime(); if(t < 86400000) return Math.max(1, Math.round(t/3600000)) + " 小时前"; if(t < 86400000*14) return Math.round(t/86400000) + " 天前"; return value.slice(0,10); }
 function scorePct(v){ return Math.round(Number(v || 0) * 100) + "%"; }
 function toast(text){ state.toast = text; render(); setTimeout(() => { if(state.toast === text){ state.toast = ""; render(); } }, 2400); }

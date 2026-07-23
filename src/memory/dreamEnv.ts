@@ -4,7 +4,7 @@ import { readPositiveInt, readString } from "./dreamUtils";
 const DEFAULT_MAX_MESSAGES = 40;
 const DEFAULT_MEMORY_CONTEXT_LIMIT = 40;
 export const DEFAULT_EMPTY_MEMORY_MIN_CHARS = 4;
-const DEFAULT_TIME_ZONE = "Asia/Singapore";
+const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 
 export function isDreamEnabled(env: Env): boolean {
   const dreamFlag = readString(env.ENABLE_DREAM);
