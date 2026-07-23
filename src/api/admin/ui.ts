@@ -596,7 +596,7 @@ async function loadEmotionMap(){
 async function loadGraph(){
   state.graphLoading=true; render();
   try{
-    const r=await api("GET","/admin/relations");
+    const r=await request("/admin/relations");
     state.graphData=r.data;
     state.graphLoading=false; render();
     await new Promise((resolve,reject)=>{
