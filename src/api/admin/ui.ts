@@ -598,8 +598,22 @@ async function loadGraph(){
   try{
     const r=await api("GET","/admin/relations");
     state.graphData=r.data;
-  }catch(e){state.error=String(e);}
-  state.graphLoading=false; render();
+    state.graphLoading=false; render();
+    await new Promise((resolve,reject)=>{
+      if(window.vis){resolve();return;}
+      const s=document.createElement('script');
+      s.src='https://unpkg.com/vis-network/standalone/umd/vis-network.min.js';
+      s.onload=resolve; s.onerror=reject;
+      document.head.appendChild(s);
+    });
+    const gd=state.graphData;
+    const nodes=new vis.DataSet();
+    const edges=new vis.DataSet();
+    gd.nodes.forEach(n=>{nodes.add({id:n.id,label:n.label||n.id.slice(0,8),title:n.label||n.id})});
+    gd.edges.forEach(e=>{edges.add({from:e.src,to:e.dst,label:e.rel_type||""})});
+    const container=document.getElementById('graph-container');
+    if(container) new vis.Network(container,{nodes,edges},{nodes:{shape:"dot",size:12},edges:{arrows:"to"},physics:{stabilization:false}});
+  }catch(e){state.error=String(e);state.graphLoading=false;render();}
 }
 function renderEmotionMap(){
   return '<main class="list">'+
@@ -615,16 +629,7 @@ function renderGraph(){
   if(state.graphLoading) return '<div class="empty"><div><b>加载中…</b></div></div>';
   if(!state.graphData) return '<div class="empty"><div><b>暂无关系数据</b></div></div>';
   return '<div class="toolbar"><h2>关系图</h2><span class="grow"></span><button class="btn" id="refresh-graph">刷新</button></div>'+
-    '<div id="graph-container"></div>'+
-    '<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"><\/script>'+
-    '<script>'+
-    'const graphData='+JSON.stringify(state.graphData)+';'+
-    'const nodes=new vis.DataSet();const edges=new vis.DataSet();'+
-    'graphData.nodes.forEach(n=>{nodes.add({id:n.id,label:n.label||n.id.slice(0,8),title:n.label||n.id})});'+
-    'graphData.edges.forEach(e=>{edges.add({from:e.src,to:e.dst,label:e.rel_type||""})});'+
-    'const container=document.getElementById("graph-container");'+
-    'new vis.Network(container,{nodes,edges},{nodes:{shape:"dot",size:12},edges:{arrows:"to"},physics:{stabilization:false}});'+
-    '<\/script>';
+    '<div id="graph-container"></div>';
 }
 function drawEmotionCanvas(points){
   const canvas = document.getElementById("emotion-canvas");
