@@ -1,5 +1,6 @@
 import { authenticate } from "../../auth/apiKey";
 import { listRecentDailyLogs, listRecentWeeklyLogs } from "../../db/v2";
+import { getRelationsGraph } from "../../db/v2";
 import { runDiaryWriter } from "../../memory/diaryWriter";
 import { runMonthlyRollup } from "../../memory/monthlyRollup";
 import { runWeeklyRollup } from "../../memory/weeklyRollup";
@@ -140,4 +141,17 @@ export async function handleMonthlyRollupAdmin(request: Request, env: Env): Prom
   } catch (error) {
     return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
+}
+
+export async function handleRelationsAdmin(request: Request, env: Env): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
+  if (!auth.profile.scopes.includes("memory:read")) {
+    return openAiError("Missing required scope: memory:read", 403);
+  }
+  const url = new URL(request.url);
+  const namespace = readString(url.searchParams.get("namespace")) || auth.profile.namespace;
+  const limit = parseInt(url.searchParams.get("limit") || "400", 10) || 400;
+  const graph = await getRelationsGraph(env.DB, { namespace, limit });
+  return json({ data: { namespace, nodes: graph.nodes, edges: graph.edges, meta: graph.meta } });
 }

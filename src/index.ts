@@ -3,7 +3,8 @@ import {
   handleDiaryAdmin,
   handleDiaryRewriteAdmin,
   handleMonthlyRollupAdmin,
-  handleWeeklyRollupAdmin
+  handleWeeklyRollupAdmin,
+  handleRelationsAdmin
 } from "./api/admin";
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
@@ -89,6 +90,9 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/admin/diary-rewrite") {
       return handleDiaryRewriteAdmin(request, env);
+    }
+    if (request.method === "GET" && url.pathname === "/admin/relations") {
+      return handleRelationsAdmin(request, env);
     }
 
     if (request.method === "GET" && url.pathname === "/health") {

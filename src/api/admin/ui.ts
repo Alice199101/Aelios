@@ -40,6 +40,7 @@ button,input,textarea,select{font:inherit;color:inherit} button{cursor:pointer} 
 .mobile-filter,.mobile-close{display:none}
 @media(max-width:980px){.main{grid-template-columns:1fr}.side{display:none}.side.mobile-open{display:block;position:absolute;inset:0 auto 0 0;width:min(86vw,320px);z-index:12;box-shadow:0 20px 60px rgba(0,0,0,.45)}.detail{position:absolute;inset:0;background:var(--bg);z-index:5}.detail.empty-detail{display:none}.mobile-filter,.mobile-close{display:inline-flex}.cred .key{width:150px}.brand span{display:none}}
 @media(max-width:640px){.app{grid-template-rows:auto minmax(0,1fr)}.top{height:auto;display:grid;grid-template-columns:1fr auto auto;gap:7px}.brand{grid-column:1/4}.cred{grid-column:1/4}.status{grid-column:1/2}.tabs{display:none}.main{height:auto}.key{width:110px!important}#test-conn{grid-column:2/3}#theme-toggle{grid-column:3/4}.toolbar{height:auto;flex-wrap:wrap}.content{-webkit-line-clamp:5}.grid2{grid-template-columns:1fr}.kv{grid-template-columns:1fr}.row{grid-template-columns:1fr}.debug{padding:12px}.debug-head{flex-wrap:wrap}}
+#graph-container{width:100%;height:calc(100vh - 120px);border:0}
 </style>
 </head>
 <body>
@@ -80,6 +81,8 @@ const state = {
   candidates:[],
   stream:[],
   streamLoading:false,
+  graphData:null,
+  graphLoading:false,
   streamDate:new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10),
 };
 document.documentElement.dataset.theme = state.theme;
@@ -590,6 +593,14 @@ async function loadEmotionMap(){
   } catch(e) { state.error = e.message; }
   state.emotionMapLoading = false; render();
 }
+async function loadGraph(){
+  state.graphLoading=true; render();
+  try{
+    const r=await api("GET","/admin/relations");
+    state.graphData=r.data;
+  }catch(e){state.error=String(e);}
+  state.graphLoading=false; render();
+}
 function renderEmotionMap(){
   return '<main class="list">'+
     '<div class="toolbar"><h2>情感地图</h2><span class="meta">'+state.emotionMap.length+' 条情感记忆</span><span class="grow"></span><button class="btn" id="refresh-emotion">刷新</button></div>'+
@@ -598,6 +609,22 @@ function renderEmotionMap(){
       state.emotionMap.length ? '<div style="position:relative;flex:1;min-height:0;display:grid;grid-template-columns:1fr 320px"><div style="position:relative;min-height:0;padding:12px"><canvas id="emotion-canvas" style="width:100%;height:100%;display:block;background:var(--panel);border-radius:var(--radius);border:1px solid var(--line)"></canvas></div><aside class="detail" id="emotion-detail"><div class="detail-head"><span class="type">记忆详情</span><span class="grow"></span></div><div class="detail-body" id="emotion-detail-body"><div class="empty"><div><b>悬停或点击散点</b><span>查看情感记忆的详细信息。</span></div></div></div></aside></div>' :
       '<div class="empty"><div><b>暂无情感数据</b><span>记忆需包含 emotion:v=...,a=... 格式的 tag 才会出现。</span></div></div>')+
   '</main>';
+}
+
+function renderGraph(){
+  if(state.graphLoading) return '<div class="empty"><div><b>加载中…</b></div></div>';
+  if(!state.graphData) return '<div class="empty"><div><b>暂无关系数据</b></div></div>';
+  return '<div class="toolbar"><h2>关系图</h2><span class="grow"></span><button class="btn" id="refresh-graph">刷新</button></div>'+
+    '<div id="graph-container"></div>'+
+    '<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"><\/script>'+
+    '<script>'+
+    'const graphData='+JSON.stringify(state.graphData)+';'+
+    'const nodes=new vis.DataSet();const edges=new vis.DataSet();'+
+    'graphData.nodes.forEach(n=>{nodes.add({id:n.id,label:n.label||n.id.slice(0,8),title:n.label||n.id})});'+
+    'graphData.edges.forEach(e=>{edges.add({from:e.src,to:e.dst,label:e.rel_type||""})});'+
+    'const container=document.getElementById("graph-container");'+
+    'new vis.Network(container,{nodes,edges},{nodes:{shape:"dot",size:12},edges:{arrows:"to"},physics:{stabilization:false}});'+
+    '<\/script>';
 }
 function drawEmotionCanvas(points){
   const canvas = document.getElementById("emotion-canvas");
@@ -691,7 +718,7 @@ function restoreScroll(pos){
 }
 function render(preserveScroll=true){
   const scroll = preserveScroll ? captureScroll() : null;
-  app.innerHTML = renderTop() + (state.tab === "diaries" ? renderDiaries() : state.tab === "emotion" ? renderEmotionMap() : state.tab === "stream" ? renderStream() : renderMemories()) + (state.toast ? '<div class="toast">'+esc(state.toast)+'</div>' : "");
+  app.innerHTML = renderTop() + (state.tab === "diaries" ? renderDiaries() : state.tab === "emotion" ? renderEmotionMap() : state.tab === "graph" ? renderGraph() : state.tab === "stream" ? renderStream() : renderMemories()) + (state.toast ? '<div class="toast">'+esc(state.toast)+'</div>' : "");
   bind();
   restoreScroll(scroll);
 }
@@ -700,7 +727,7 @@ function bind(){
   $("#api-key")?.addEventListener("input", e=>{ state.apiKey=e.target.value; savePrefs(); });
   $("#test-conn")?.addEventListener("click", testConnection);
   $("#theme-toggle")?.addEventListener("click", ()=>{ state.theme = state.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = state.theme; savePrefs(); render(); });
-  document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>{ state.tab=b.dataset.tab; if(state.tab==="diaries" && !state.diaries.length) loadDiaries(); if(state.tab==="emotion" && !state.emotionMap.length && !state.emotionMapLoading) loadEmotionMap(); if(state.tab==="stream" && !state.stream.length && !state.streamLoading) loadStream(); if(state.tab==="memories" && !state.precious.length) loadPrecious(); render(); }));
+  document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>{ state.tab=b.dataset.tab; if(state.tab==="diaries" && !state.diaries.length) loadDiaries(); if(state.tab==="emotion" && !state.emotionMap.length && !state.emotionMapLoading) loadEmotionMap(); if(state.tab==="graph" && !state.graphData && !state.graphLoading) loadGraph(); if(state.tab==="stream" && !state.stream.length && !state.streamLoading) loadStream(); if(state.tab==="memories" && !state.precious.length) loadPrecious(); render(); }));
   document.querySelectorAll("[data-subtab]").forEach(b=>b.addEventListener("click",()=>{ state.memoriesSubTab=b.dataset.subtab; state.active=null; state.error=""; if(state.memoriesSubTab==="precious" && !state.precious.length) loadPrecious(); if(state.memoriesSubTab==="glossary" && !state.glossary.length) loadGlossary(); if(state.memoriesSubTab==="candidates" && !state.candidates.length) loadCandidates(); render(); }));
   $("#query")?.addEventListener("input", e=>setFilter("query", e.target.value));
   $("#query")?.addEventListener("keydown", e=>{ if(e.key==="Enter") searchMemories(); });
@@ -779,6 +806,7 @@ function bind(){
     setTimeout(()=>drawEmotionCanvas(state.emotionMap), 50);
   }
   $("#refresh-emotion")?.addEventListener("click", ()=>loadEmotionMap());
+  document.getElementById("refresh-graph")?.addEventListener("click",()=>{state.graphData=null;loadGraph();});
   $("#run-weekly-dry")?.addEventListener("click", ()=>runWeeklyRollup(true));
   $("#run-weekly-exec")?.addEventListener("click", ()=>runWeeklyRollup(false));
   $("#run-monthly-dry")?.addEventListener("click", ()=>runMonthlyRollup(true));
