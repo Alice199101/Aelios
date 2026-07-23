@@ -284,7 +284,7 @@ function statusDot(){
 function renderTop(){
   return '<div class="top">'+
     '<div class="brand"><div class="mark">A</div><div><b>Aelios</b><span>MEMORY · ADMIN</span></div></div>'+
-    '<div class="tabs"><button class="tab '+(state.tab==="memories"?"active":"")+'" data-tab="memories">记忆库</button><button class="tab '+(state.tab==="stream"?"active":"")+'" data-tab="stream">对话流</button><button class="tab '+(state.tab==="diaries"?"active":"")+'" data-tab="diaries">日记</button><button class="tab '+(state.tab==="emotion"?"active":"")+'" data-tab="emotion">情感地图</button>'+'<button class="tab "+(state.tab==="graph"?"active":"")+"' data-tab="graph">关系图</button></div>'+
+    '<div class="tabs"><button class="tab '+(state.tab==="memories"?"active":"")+'" data-tab="memories">记忆库</button><button class="tab '+(state.tab==="stream"?"active":"")+'" data-tab="stream">对话流</button><button class="tab '+(state.tab==="diaries"?"active":"")+'" data-tab="diaries">日记</button><button class="tab '+(state.tab==="emotion"?"active":"")+'" data-tab="emotion">情感地图</button>'+'<button class="tab "+(state.tab==="graph"?"active":"")+'" data-tab="graph">关系图</button></div>'+
     '<div class="cred"><input class="input worker mono" id="worker-url" placeholder="Worker URL" value="'+esc(state.workerUrl)+'"><input class="input key mono" id="api-key" type="password" placeholder="API Key" value="'+esc(state.apiKey)+'"></div>'+
     statusDot()+
     '<button class="btn primary" id="test-conn">测试连接</button>'+
