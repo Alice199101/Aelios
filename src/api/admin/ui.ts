@@ -77,8 +77,14 @@ const state = {
   _emotionPoints:[],
   memoriesSubTab:"search",
   precious:[],
+  preciousLoading:false,
+  preciousError:"",
   glossary:[],
+  glossaryLoading:false,
+  glossaryError:"",
   candidates:[],
+  candidatesLoading:false,
+  candidatesError:"",
   stream:[],
   streamLoading:false,
   graphData:null,
@@ -98,13 +104,21 @@ function apiBase(){ return state.workerUrl.replace(/\/+$/,""); }
 function readError(payload, fallback){ return payload?.error?.message || payload?.error || fallback; }
 async function request(path, options={}){
   if(!state.apiKey.trim()) throw new Error("请先填写 API Key");
-  const headers = authHeaders(options.body ? { "content-type":"application/json" } : {});
-  const response = await fetch(apiBase() + path, { ...options, headers:{ ...headers, ...(options.headers || {}) } });
-  const text = await response.text();
-  let payload = null;
-  try { payload = text ? JSON.parse(text) : null; } catch { payload = { raw:text }; }
-  if(!response.ok) throw new Error(readError(payload, response.status + " " + response.statusText));
-  return payload;
+  const { timeoutMs=15000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const headers = authHeaders(fetchOptions.body ? { "content-type":"application/json" } : {});
+  try {
+    const response = await fetch(apiBase() + path, { ...fetchOptions, signal:controller.signal, headers:{ ...headers, ...(fetchOptions.headers || {}) } });
+    const text = await response.text();
+    let payload = null;
+    try { payload = text ? JSON.parse(text) : null; } catch { payload = { raw:text }; }
+    if(!response.ok) throw new Error(readError(payload, response.status + " " + response.statusText));
+    return payload;
+  } catch(e) {
+    if(e?.name === "AbortError") throw new Error("请求超时（15 秒），请检查 Worker 或网络连接");
+    throw e;
+  } finally { clearTimeout(timer); }
 }
 async function testConnection(){
   state.status = "testing"; state.error = ""; savePrefs(); render();
@@ -138,28 +152,22 @@ async function loadList(cursor=null, append=false){
   state.loading = false; render(append);
 }
 async function loadPrecious(){
-  state.loading = true; state.error = ""; render();
-  try {
-    const data = await request("/v1/precious?namespace=default&limit=100");
-    state.precious = data.data || [];
-  } catch(e) { state.error = e.message; }
-  state.loading = false; render();
+  state.preciousLoading = true; state.preciousError = ""; render();
+  try { state.precious = (await request("/v1/precious?namespace=default&limit=100")).data || []; }
+  catch(e) { state.preciousError = e.message; }
+  finally { state.preciousLoading = false; render(); }
 }
 async function loadGlossary(){
-  state.loading = true; state.error = ""; render();
-  try {
-    const data = await request("/v1/glossary?namespace=default");
-    state.glossary = data.data || [];
-  } catch(e) { state.error = e.message; }
-  state.loading = false; render();
+  state.glossaryLoading = true; state.glossaryError = ""; render();
+  try { state.glossary = (await request("/v1/glossary?namespace=default")).data || []; }
+  catch(e) { state.glossaryError = e.message; }
+  finally { state.glossaryLoading = false; render(); }
 }
 async function loadCandidates(){
-  state.loading = true; state.error = ""; render();
-  try {
-    const data = await request("/v1/candidates?namespace=default&status=pending&limit=100");
-    state.candidates = data.data || [];
-  } catch(e) { state.error = e.message; }
-  state.loading = false; render();
+  state.candidatesLoading = true; state.candidatesError = ""; render();
+  try { state.candidates = (await request("/v1/candidates?namespace=default&status=pending&limit=100")).data || []; }
+  catch(e) { state.candidatesError = e.message; }
+  finally { state.candidatesLoading = false; render(); }
 }
 async function approveCandidate(id){
   try {
@@ -329,8 +337,8 @@ function renderMemories(){
 function renderPreciousContent(){
   let h = '<main class="debug">'+
     '<div class="debug-head"><h1>珍贵记忆</h1><span class="meta">GET /v1/precious</span><span class="grow"></span><button class="btn" id="refresh-precious">刷新</button></div>';
-  if(state.error) h += '<div class="hint" style="margin:12px;border-color:rgba(226,118,99,.5);color:var(--bad)">'+esc(state.error)+'</div>';
-  if(state.loading && !state.precious.length){
+  if(state.preciousError) h += '<div class="hint" style="margin:12px;border-color:rgba(226,118,99,.5);color:var(--bad)">'+esc(state.preciousError)+'</div>';
+  if(state.preciousLoading && !state.precious.length){
     h += '<div class="empty"><div><b>加载中</b><span class="mono">fetching precious memories...</span></div></div>';
   } else if(state.precious.length){
     h += '<div class="cards">'+state.precious.map(p=>'<article class="card"><div class="card-top"><span class="type">precious</span><span class="source">'+esc(p.source||"—")+'</span><span class="date">'+shortDate(p.created_at)+'</span></div><div class="content" style="-webkit-line-clamp:8">'+esc(p.content)+'</div><div class="tags"><span class="tag mono">'+esc(p.id)+'</span></div></article>').join("")+'</div>';
@@ -341,51 +349,20 @@ function renderPreciousContent(){
   return h;
 }
 function renderGlossaryContent(){
-  let h = '<main class="debug">'+
-    '<div class="debug-head"><h1>黑话术语</h1><span class="meta">GET /v1/glossary</span><span class="grow"></span><button class="btn" id="refresh-glossary">刷新</button></div>';
-  if(state.error) h += '<div class="hint" style="margin:12px;border-color:rgba(226,118,99,.5);color:var(--bad)">'+esc(state.error)+'</div>';
-  if(state.loading && !state.glossary.length){
-    h += '<div class="empty"><div><b>加载中</b><span class="mono">fetching glossary...</span></div></div>';
-  } else if(state.glossary.length){
-    h += '<div style="padding:8px">';
-    state.glossary.forEach(g=>{
-      const aliases = (g.aliases||[]).length ? '<div class="tags" style="margin-top:4px">'+g.aliases.map(a=>'<span class="tag">别名: '+esc(a)+'</span>').join("")+'</div>' : '';
-      const examples = g.examples ? '<div style="margin-top:4px;font-size:12px;color:var(--muted)">例: '+esc(String(g.examples).slice(0,120))+'</div>' : '';
-      h += '<div style="border:1px solid var(--line);background:var(--panel);border-radius:7px;margin-bottom:8px;padding:10px">'+
-        '<div class="card-top"><span class="type">term</span><b>'+esc(g.term)+'</b><span class="scores">'+esc(g.status||"active")+'</span></div>'+
-        '<div style="margin-top:6px;white-space:pre-wrap">'+esc(g.definition||"—")+'</div>'+
-        aliases+examples+
-      '</div>';
-    });
-    h += '</div>';
-  } else {
-    h += '<div class="empty"><div><b>暂无术语</b><span>当小秘书学习到新的黑话/术语时会出现在这里。</span></div></div>';
-  }
-  h += '</main>';
-  return h;
+  let h='<main class="debug"><div class="debug-head"><h1>黑话术语</h1><span class="meta">GET /v1/glossary</span><span class="grow"></span><button class="btn" id="refresh-glossary">刷新</button></div>';
+  if(state.glossaryError) h+='<div class="hint" style="margin:12px;color:var(--bad)">'+esc(state.glossaryError)+'</div>';
+  if(state.glossaryLoading&&!state.glossary.length) h+='<div class="empty"><div><b>加载中</b><span class="mono">fetching glossary...</span></div></div>';
+  else if(state.glossary.length) h+='<div class="cards">'+state.glossary.map(g=>{const a=Array.isArray(g.aliases)?g.aliases:[],x=Array.isArray(g.examples)?g.examples:[];return '<details class="card"><summary class="card-top" style="cursor:pointer"><span class="type">term</span><b>'+esc(g.term)+'</b><span class="scores">'+esc(g.status||"active")+' · 展开详情</span></summary><div class="content">'+esc(g.definition||"—")+'</div>'+(a.length?'<div class="tags">'+a.map(v=>'<span class="tag">别名: '+esc(v)+'</span>').join('')+'</div>':'')+(x.length?'<div class="field"><div class="label">示例</div>'+x.map(v=>'<div class="content">'+esc(v)+'</div>').join('')+'</div>':'')+'<div class="row"><label>ID</label><span class="mono">'+esc(g.id||'—')+'</span></div><div class="row"><label>更新时间</label><span>'+esc(fmtDate(g.updated_at))+'</span></div><div class="row"><label>最后出现 / 次数</label><span>'+esc(fmtDate(g.last_seen_at))+' / '+esc(g.seen_count??0)+'</span></div></details>';}).join('')+'</div>';
+  else h+='<div class="empty"><div><b>暂无术语</b><span>当小秘书学习到新的黑话/术语时会出现在这里。</span></div></div>';
+  return h+'</main>';
 }
 function renderCandidatesContent(){
-  let h = '<main class="debug">'+
-    '<div class="debug-head"><h1>候选记忆</h1><span class="meta">GET /v1/candidates</span><span class="grow"></span><button class="btn" id="refresh-candidates">刷新</button></div>';
-  if(state.error) h += '<div class="hint" style="margin:12px;border-color:rgba(226,118,99,.5);color:var(--bad)">'+esc(state.error)+'</div>';
-  if(state.loading && !state.candidates.length){
-    h += '<div class="empty"><div><b>加载中</b><span class="mono">fetching candidates...</span></div></div>';
-  } else if(state.candidates.length){
-    h += '<div class="cards">'+state.candidates.map(c=>{
-      const tags = (c.tags||[]).slice(0,6).map(t=>'<span class="tag">'+esc(t)+'</span>').join("");
-      return '<article class="card"><div class="card-top"><span class="type">'+esc(c.type||"candidate")+'</span><span class="source">'+esc(c.fact_key||"—")+'</span><span class="date">'+shortDate(c.created_at)+'</span></div>'+
-        '<div class="content" style="-webkit-line-clamp:6">'+esc(c.content||"")+'</div>'+
-        '<div class="tags">'+tags+'<span class="scores">conf '+scorePct(c.confidence)+' · imp '+scorePct(c.importance)+'</span></div>'+
-        '<div style="display:flex;gap:8px;margin-top:4px">'+
-          '<button class="btn primary" data-approve="'+esc(c.id)+'">批准</button>'+
-          '<button class="btn danger" data-discard="'+esc(c.id)+'">丢弃</button>'+
-        '</div></article>';
-    }).join("")+'</div>';
-  } else {
-    h += '<div class="empty"><div><b>暂无候选</b><span>小秘书提取的新记忆会先进入候选区等待审核。</span></div></div>';
-  }
-  h += '</main>';
-  return h;
+  let h='<main class="debug"><div class="debug-head"><h1>候选记忆</h1><span class="meta">GET /v1/candidates</span><span class="grow"></span><button class="btn" id="refresh-candidates">刷新</button></div>';
+  if(state.candidatesError) h+='<div class="hint" style="margin:12px;color:var(--bad)">'+esc(state.candidatesError)+'</div>';
+  if(state.candidatesLoading&&!state.candidates.length) h+='<div class="empty"><div><b>加载中</b><span class="mono">fetching candidates...</span></div></div>';
+  else if(state.candidates.length) h+='<div class="cards">'+state.candidates.map(c=>{const tags=Array.isArray(c.tags)?c.tags:[],ids=Array.isArray(c.source_message_ids)?c.source_message_ids:[];return '<details class="card"><summary class="card-top" style="cursor:pointer"><span class="type">'+esc(c.type||'candidate')+'</span><span class="source">'+esc(c.fact_key||'—')+'</span><span class="date">'+shortDate(c.created_at)+' · 展开详情</span></summary><div class="content">'+esc(c.content||'')+'</div><div class="tags">'+tags.map(t=>'<span class="tag">'+esc(t)+'</span>').join('')+'<span class="scores">conf '+scorePct(c.confidence)+' · imp '+scorePct(c.importance)+'</span></div><div class="row"><label>ID</label><span class="mono">'+esc(c.id||'—')+'</span></div><div class="row"><label>来源 / 状态</label><span>'+esc(c.source||'—')+' / '+esc(c.status||'pending')+'</span></div><div class="row"><label>消息 IDs</label><span class="mono">'+esc(ids.join(', ')||'—')+'</span></div><div class="row"><label>创建 / 更新</label><span>'+esc(fmtDate(c.created_at))+' / '+esc(fmtDate(c.updated_at))+'</span></div><div style="display:flex;gap:8px;margin-top:4px"><button class="btn primary" data-approve="'+esc(c.id)+'">批准</button><button class="btn danger" data-discard="'+esc(c.id)+'">丢弃</button></div></details>';}).join('')+'</div>';
+  else h+='<div class="empty"><div><b>暂无候选</b><span>小秘书提取的新记忆会先进入候选区等待审核。</span></div></div>';
+  return h+'</main>';
 }
 function memoryCard(m){
   const tags = (m.tags || []).slice(0,8).map(t=>'<span class="tag">'+esc(t)+'</span>').join("");
@@ -733,7 +710,7 @@ function bind(){
   $("#test-conn")?.addEventListener("click", testConnection);
   $("#theme-toggle")?.addEventListener("click", ()=>{ state.theme = state.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = state.theme; savePrefs(); render(); });
   document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>{ state.tab=b.dataset.tab; if(state.tab==="diaries" && !state.diaries.length) loadDiaries(); if(state.tab==="emotion" && !state.emotionMap.length && !state.emotionMapLoading) loadEmotionMap(); if(state.tab==="graph" && !state.graphData && !state.graphLoading) loadGraph(); if(state.tab==="stream" && !state.stream.length && !state.streamLoading) loadStream(); if(state.tab==="memories" && !state.precious.length) loadPrecious(); render(); }));
-  document.querySelectorAll("[data-subtab]").forEach(b=>b.addEventListener("click",()=>{ state.memoriesSubTab=b.dataset.subtab; state.active=null; state.error=""; if(state.memoriesSubTab==="precious" && !state.precious.length) loadPrecious(); if(state.memoriesSubTab==="glossary" && !state.glossary.length) loadGlossary(); if(state.memoriesSubTab==="candidates" && !state.candidates.length) loadCandidates(); render(); }));
+  document.querySelectorAll("[data-subtab]").forEach(b=>b.addEventListener("click",()=>{ state.memoriesSubTab=b.dataset.subtab; state.active=null; state.error=""; if(state.memoriesSubTab==="precious" && !state.precious.length && !state.preciousLoading) loadPrecious(); if(state.memoriesSubTab==="glossary" && !state.glossary.length && !state.glossaryLoading) loadGlossary(); if(state.memoriesSubTab==="candidates" && !state.candidates.length && !state.candidatesLoading) loadCandidates(); render(); }));
   $("#query")?.addEventListener("input", e=>setFilter("query", e.target.value));
   $("#query")?.addEventListener("keydown", e=>{ if(e.key==="Enter") searchMemories(); });
   $("#search-btn")?.addEventListener("click", searchMemories);
@@ -748,7 +725,7 @@ function bind(){
   $("#refresh")?.addEventListener("click", ()=> state.filters.query.trim() ? searchMemories() : loadList());
   $("#new-memory")?.addEventListener("click", createMemory);
   $("#load-more")?.addEventListener("click", ()=>loadList(state.paging.cursor, true));
-  document.querySelectorAll(".card").forEach(c=>c.addEventListener("click",()=>{ state.active = state.memories.find(m=>m.id===c.dataset.id) || null; render(); }));
+  document.querySelectorAll(".card[data-id]").forEach(c=>c.addEventListener("click",()=>{ state.active = state.memories.find(m=>m.id===c.dataset.id) || null; render(); }));
   $("#close-detail")?.addEventListener("click", ()=>{ state.active=null; render(); });
   $("#reset-detail")?.addEventListener("click", ()=>render());
   $("#save-memory")?.addEventListener("click", saveMemory);

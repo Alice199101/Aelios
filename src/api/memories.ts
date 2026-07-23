@@ -650,7 +650,7 @@ export async function handleGlossaryApi(request: Request, env: Env): Promise<Res
       namespace,
       status: readString(url.searchParams.get("status")) || "active"
     });
-    return json({ data: rows });
+    return json({ data: rows.map((row) => ({ ...row, aliases: parseJsonArray(row.aliases), examples: parseJsonArray(row.examples) })) });
   }
 
   const scopeError = requireScope(auth.profile, "memory:write");
